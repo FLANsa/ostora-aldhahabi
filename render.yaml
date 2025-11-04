@@ -1,25 +1,25 @@
 services:
   - type: static
-    name: black-fingerprint
+    name: aldhahbi
     buildCommand: ""
     staticPublishPath: ./
     envVars:
       - key: NODE_ENV
         value: production
       - key: APP_NAME
-        value: Black Fingerprint
+        value: Aldhahbi
       - key: APP_VERSION
         value: "2.0.0"
       - key: COMPANY_NAME
-        value: بصمة سوداء
+        value: الذهبي
       - key: COMPANY_NAME_EN
-        value: Black Fingerprint
+        value: Aldhahbi
       - key: COMPANY_ADDRESS
         value: الرياض، المملكة العربية السعودية
       - key: COMPANY_PHONE
         value: "011-0000000"
       - key: COMPANY_EMAIL
-        value: support@blackfingerprint.com
+        value: support@aldhahbi.com
       - key: VAT_RATE
         value: "0.15"
       - key: VAT_RATE_PERCENTAGE

@@ -1,13 +1,13 @@
 /**
  * Configuration and Constants
- * بصمة سوداء - Phone Store Management System
+ * الذهبي - Phone Store Management System
  */
 
 // VAT Configuration for Saudi Arabia
 const CONFIG = {
     VAT_RATE: 0.15, // 15% VAT rate
     COMPANY_INFO: {
-        name: "بصمة سوداء",
+        name: "الذهبي",
         vatNumber: "1131278742",
         address: "الرياض، المملكة العربية السعودية",
         phone: "011-0000000"

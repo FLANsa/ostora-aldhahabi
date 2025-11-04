@@ -1,6 +1,6 @@
 /**
  * Utility Functions
- * بصمة سوداء - Phone Store Management System
+ * الذهبي - Phone Store Management System
  */
 
 // VAT Calculation Functions

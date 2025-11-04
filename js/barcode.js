@@ -1,6 +1,6 @@
 /**
  * Barcode Generation and Management
- * بصمة سوداء - Phone Store Management System
+ * الذهبي - Phone Store Management System
  */
 
 class BarcodeGenerator {

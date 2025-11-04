@@ -1,6 +1,6 @@
 /**
  * Main Application Entry Point
- * بصمة سوداء - Phone Store Management System
+ * الذهبي - Phone Store Management System
  */
 
 // Global application state

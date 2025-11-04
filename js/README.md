@@ -1,4 +1,4 @@
-# JavaScript Architecture - بصمة سوداء
+# JavaScript Architecture - الذهبي
 
 ## 📁 File Structure
 
@@ -344,5 +344,5 @@ To extend the system:
 
 ---
 
-**بصمة سوداء - Phone Store Management System**
+**الذهبي - Phone Store Management System**
 *Modular JavaScript Architecture v1.0*
