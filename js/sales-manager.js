@@ -542,7 +542,7 @@ class SalesManager {
                 <title>فاتورة - ${sale.sale_number}</title>
                 <style>
                     body { font-family: 'Cairo', Arial, sans-serif; font-size: 12px; line-height: 1.2; color: #000; background: #fff; margin: 0; padding: 5mm; }
-                    .receipt-template { width: 80mm; max-width: 80mm; margin: 0 auto; }
+                    .receipt-template { width: 58mm; max-width: 58mm; margin: 0 auto; }
                     .receipt-header { text-align: center; margin-bottom: 20px; border-bottom: 1px dashed #000; padding-bottom: 15px; }
                     .company-info h1 { font-size: 18px; margin: 0 0 10px; font-weight: bold; }
                     .company-info p, .sale-info p, .customer-info p { margin: 3px 0; font-size: 11px; }
@@ -556,7 +556,7 @@ class SalesManager {
                     .summary-row.total { font-weight: bold; font-size: 14px; border-top: 1px solid #000; padding-top: 8px; margin-top: 15px; }
                     .receipt-footer { text-align: center; margin-top: 25px; border-top: 1px dashed #000; padding-top: 15px; }
                     .receipt-footer p { margin: 5px 0; font-size: 11px; }
-                    @page { size: 80mm auto; margin: 5mm; }
+                    @page { size: 58mm auto; margin: 5mm; }
                     @media print { 
                         body { margin: 0; padding: 0; }
                         * { -webkit-print-color-adjust: exact; color-adjust: exact; }
