@@ -1,6 +1,6 @@
 /**
  * Authentication Module
- * الذهبي - Phone Store Management System
+ * الركبي للاتصالات - Phone Store Management System
  */
 
 class AuthManager {

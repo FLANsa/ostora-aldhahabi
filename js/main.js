@@ -1,6 +1,6 @@
 /**
  * Main Application Entry Point
- * الذهبي - Phone Store Management System
+ * الركبي للاتصالات - Phone Store Management System
  */
 
 // Global application state

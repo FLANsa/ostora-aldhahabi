@@ -17,8 +17,8 @@ APP_VERSION=2.0.0
 APP_DESCRIPTION=نظام إدارة متجر الجوالات
 
 # Company Information
-COMPANY_NAME=الذهبي
-COMPANY_NAME_EN=Aldhahbi
+COMPANY_NAME=الركبي للاتصالات
+COMPANY_NAME_EN=Al-Rakbi for Communications
 COMPANY_ADDRESS=الرياض، المملكة العربية السعودية
 COMPANY_PHONE=0599254441
 COMPANY_EMAIL=support@aldhahbi.com

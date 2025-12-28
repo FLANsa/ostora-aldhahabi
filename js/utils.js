@@ -1,6 +1,6 @@
 /**
  * Utility Functions
- * الذهبي - Phone Store Management System
+ * الركبي للاتصالات - Phone Store Management System
  */
 
 // VAT Calculation Functions

@@ -11,9 +11,9 @@ services:
       - key: APP_VERSION
         value: "2.0.0"
       - key: COMPANY_NAME
-        value: الذهبي
+        value: الركبي للاتصالات
       - key: COMPANY_NAME_EN
-        value: Aldhahbi
+        value: Al-Rakbi for Communications
       - key: COMPANY_ADDRESS
         value: الرياض، المملكة العربية السعودية
       - key: COMPANY_PHONE
