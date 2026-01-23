@@ -537,7 +537,7 @@
                 displayRepsAccounts();
                 displayTechsAccounts();
                 displayPayments();
-                displaySummary();
+                await displaySummary();
                 
                 console.log('✅ All data loaded successfully');
                 
@@ -577,7 +577,7 @@
         }
 
         // Display summary
-        function displaySummary() {
+        async function displaySummary() {
             const totalReps = repsAccounts.length;
             const totalTechs = techsAccounts.length;
             const totalRepAmount = repsAccounts.reduce((sum, rep) => sum + (rep.partCostSum || 0), 0);
@@ -594,11 +594,37 @@
             const totalProfit = [...repsAccounts, ...techsAccounts].reduce((sum, item) => sum + (item.profitSum || 0), 0);
             const totalPayments = totalRepPaid + totalTechPaid;
             
+            // حساب إجمالي المبالغ المحصلة من جميع أعمال الصيانة مباشرة
+            // (وليس من repsAccounts لتجنب الحساب المزدوج)
+            let totalRevenue = 0;
+            try {
+                const dateFrom = document.getElementById('dateFrom').value;
+                const dateTo = document.getElementById('dateTo').value;
+                const fromDate = new Date(dateFrom);
+                const toDate = new Date(dateTo);
+                toDate.setHours(23, 59, 59, 999);
+                
+                // جلب جميع أعمال الصيانة في الفترة المحددة
+                const allJobs = await window.firebaseDatabase.getMaintenanceJobs({
+                    dateFrom: fromDate,
+                    dateTo: toDate
+                });
+                
+                // حساب إجمالي المبالغ المحصلة من جميع الأعمال
+                totalRevenue = allJobs.reduce((sum, job) => {
+                    return sum + (Number(job.amountCharged) || 0);
+                }, 0);
+                
+                console.log('📊 Total jobs found:', allJobs.length);
+                console.log('💰 Total revenue from all jobs:', totalRevenue);
+            } catch (error) {
+                console.error('❌ Error calculating total revenue:', error);
+                // في حالة الخطأ، استخدام مجموع revenueSum من repsAccounts كبديل
+                totalRevenue = repsAccounts.reduce((sum, rep) => sum + (rep.revenueSum || 0), 0);
+            }
+            
             // حساب أرباح المحل: إجمالي المبالغ المحصلة - تكلفة القطع - عمولة الفنيين
-            // إجمالي المبالغ المحصلة = مجموع amountCharged من جميع أعمال الصيانة المكتملة
-            // نستخدم repsAccounts فقط لتجنب الحساب المزدوج (نفس البيانات في techsAccounts)
-            const totalRevenue = repsAccounts.reduce((sum, rep) => sum + (rep.revenueSum || 0), 0);
-            const totalShopProfit = totalRevenue - totalPartCosts - totalTechCommissions; // أرباح المحل
+            const totalShopProfit = totalRevenue - totalPartCosts - totalTechCommissions;
 
             console.log('📊 Summary calculations:');
             console.log('- Total reps:', totalReps);
@@ -608,7 +634,7 @@
             console.log('- Tech commissions (عمولة الفنيين):', totalTechCommissions);
             console.log('- Total payments:', totalPayments);
             console.log('🏪 Shop profits:');
-            console.log('- Total revenue (إجمالي المبالغ المحصلة):', totalRevenue, '= مجموع amountCharged من repsAccounts فقط (تجنب الحساب المزدوج)');
+            console.log('- Total revenue (إجمالي المبالغ المحصلة):', totalRevenue, '= مجموع amountCharged من جميع أعمال الصيانة');
             console.log('- Shop profit (أرباح المحل):', totalShopProfit, '=', totalRevenue, '-', totalPartCosts, '-', totalTechCommissions);
 
             document.getElementById('totalReps').textContent = totalReps;

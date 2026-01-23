@@ -513,9 +513,24 @@ class FirebaseDatabase {
   // ===== أعمال الصيانة =====
   async addMaintenanceJob(jobData) {
     try {
-      // ✅ حساب الأرباح باستخدام الدالة الموحدة
+      // حساب totalPartCost من parts array أو استخدام القيمة الموجودة
+      let totalPartCost = 0;
+      if (jobData.parts && Array.isArray(jobData.parts) && jobData.parts.length > 0) {
+        totalPartCost = jobData.parts.reduce((sum, part) => sum + (Number(part.partCost) || 0), 0);
+      } else if (jobData.totalPartCost !== undefined) {
+        totalPartCost = Number(jobData.totalPartCost) || 0;
+      } else if (jobData.partCost !== undefined) {
+        totalPartCost = Number(jobData.partCost) || 0; // للتوافق مع البيانات القديمة
+      }
+
+      // تحديث jobData.totalPartCost إذا لم يكن موجوداً
+      if (!jobData.totalPartCost && totalPartCost > 0) {
+        jobData.totalPartCost = totalPartCost;
+      }
+
+      // ✅ حساب الأرباح باستخدام الدالة الموحدة مع totalPartCost
       const { profit, techCommission, shopProfit } = this.computeDerived(
-        jobData.partCost, 
+        totalPartCost,  // استخدام totalPartCost بدلاً من partCost
         jobData.amountCharged, 
         jobData.techPercent !== undefined ? jobData.techPercent : 0
       );
@@ -709,14 +724,43 @@ class FirebaseDatabase {
 
   async updateMaintenanceJob(jobId, jobData) {
     try {
-      // ✅ إعادة حساب الأرباح إذا تغيرت القيم باستخدام الدالة الموحدة
-      if (jobData.partCost !== undefined || jobData.amountCharged !== undefined || jobData.techPercent !== undefined) {
+      // إعادة حساب الأرباح إذا تغيرت القيم ذات الصلة
+      const shouldRecalculate = 
+        jobData.parts !== undefined || 
+        jobData.totalPartCost !== undefined || 
+        jobData.partCost !== undefined || 
+        jobData.amountCharged !== undefined || 
+        jobData.techPercent !== undefined;
+
+      if (shouldRecalculate) {
         const currentJob = await this.getMaintenanceJob(jobId);
-        const partCost = jobData.partCost !== undefined ? jobData.partCost : currentJob.partCost;
+        
+        // حساب totalPartCost من jobData أو currentJob
+        let totalPartCost = 0;
+        if (jobData.parts && Array.isArray(jobData.parts) && jobData.parts.length > 0) {
+          totalPartCost = jobData.parts.reduce((sum, part) => sum + (Number(part.partCost) || 0), 0);
+        } else if (jobData.totalPartCost !== undefined) {
+          totalPartCost = Number(jobData.totalPartCost) || 0;
+        } else if (jobData.partCost !== undefined) {
+          totalPartCost = Number(jobData.partCost) || 0;
+        } else if (currentJob.parts && Array.isArray(currentJob.parts) && currentJob.parts.length > 0) {
+          totalPartCost = currentJob.parts.reduce((sum, part) => sum + (Number(part.partCost) || 0), 0);
+        } else if (currentJob.totalPartCost !== undefined) {
+          totalPartCost = Number(currentJob.totalPartCost) || 0;
+        } else if (currentJob.partCost !== undefined) {
+          totalPartCost = Number(currentJob.partCost) || 0;
+        }
+        
+        // تحديث jobData.totalPartCost إذا لم يكن موجوداً
+        if (!jobData.totalPartCost && totalPartCost > 0) {
+          jobData.totalPartCost = totalPartCost;
+        }
+        
         const amountCharged = jobData.amountCharged !== undefined ? jobData.amountCharged : currentJob.amountCharged;
         const techPercent = jobData.techPercent !== undefined ? jobData.techPercent : currentJob.techPercent;
         
-        const { profit, techCommission, shopProfit } = this.computeDerived(partCost, amountCharged, techPercent);
+        // ✅ حساب الأرباح باستخدام الدالة الموحدة مع totalPartCost
+        const { profit, techCommission, shopProfit } = this.computeDerived(totalPartCost, amountCharged, techPercent);
         
         jobData.profit = profit;
         jobData.techCommission = techCommission;
@@ -983,7 +1027,9 @@ class FirebaseDatabase {
           uniqueReps.forEach(repId => {
             if (repTotals[repId]) {
               repTotals[repId].jobsCount++;
-        }
+              // ملاحظة: revenueSum لا يُضاف هنا لأن amountCharged هو مبلغ واحد لكل عمل، وليس لكل مندوب
+              // سيتم حساب totalRevenue من جميع أعمال الصيانة مباشرة في displaySummary
+            }
           });
         } 
         // التعامل مع الهيكل القديم (repId واحد)
