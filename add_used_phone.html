@@ -196,7 +196,7 @@
               </div>
 
               <div class="text-center">
-                <button type="submit" class="btn btn-primary">إضافة الهاتف المستعمل</button>
+                <button type="submit" class="btn btn-primary" id="add_used_phone_btn">إضافة الهاتف المستعمل</button>
                 <a href="dashboard.html" class="btn btn-secondary">عودة للوحة التحكم</a>
               </div>
             </form>
@@ -396,7 +396,22 @@
       return String(next).padStart(6,'0');
     }
 
+    let isProcessingUsedPhone = false; // Global flag to prevent multiple submissions
+
     async function saveUsedPhoneToFirebase(){
+      if (isProcessingUsedPhone) {
+        console.log('⏳ عملية إضافة الهاتف المستعمل قيد المعالجة بالفعل...');
+        return false;
+      }
+      
+      isProcessingUsedPhone = true;
+      const addUsedPhoneBtn = document.getElementById('add_used_phone_btn');
+      const originalText = addUsedPhoneBtn ? addUsedPhoneBtn.innerHTML : '';
+      if (addUsedPhoneBtn) {
+        addUsedPhoneBtn.disabled = true;
+        addUsedPhoneBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري المعالجة...';
+      }
+
       try{
         // Validate customer ID and phone number
         const customerId = document.getElementById('customer_id').value.trim();
@@ -405,12 +420,22 @@
         if (!customerId || customerId.length !== 10 || !/^[0-9]{10}$/.test(customerId)) {
           alert('رقم الهوية/الإقامة مطلوب ويجب أن يكون 10 أرقام');
           document.getElementById('customer_id').focus();
+          if (addUsedPhoneBtn) {
+            addUsedPhoneBtn.disabled = false;
+            addUsedPhoneBtn.innerHTML = originalText;
+          }
+          isProcessingUsedPhone = false;
           return false;
         }
         
         if (!customerPhone || customerPhone.length !== 10 || !/^[0-9]{10}$/.test(customerPhone)) {
           alert('رقم هاتف العميل مطلوب ويجب أن يكون 10 أرقام');
           document.getElementById('customer_phone').focus();
+          if (addUsedPhoneBtn) {
+            addUsedPhoneBtn.disabled = false;
+            addUsedPhoneBtn.innerHTML = originalText;
+          }
+          isProcessingUsedPhone = false;
           return false;
         }
 
@@ -419,6 +444,11 @@
         if (!batteryValue) {
           alert('يرجى إدخال نسبة البطارية');
           document.getElementById('age').focus();
+          if (addUsedPhoneBtn) {
+            addUsedPhoneBtn.disabled = false;
+            addUsedPhoneBtn.innerHTML = originalText;
+          }
+          isProcessingUsedPhone = false;
           return false;
         }
 
@@ -448,9 +478,33 @@
           date_added: new Date().toISOString()
         };
 
-        if(!phoneData.brand || !phoneData.model || !phoneData.serial_number){ alert('يرجى ملء جميع الحقول المطلوبة'); return false; }
-        if(phoneData.purchase_price<=0 || phoneData.selling_price<=0){ alert('يرجى إدخال أسعار صحيحة'); return false; }
-        if(!phoneData.phone_condition){ alert('يرجى اختيار حالة الهاتف'); return false; }
+        if(!phoneData.brand || !phoneData.model || !phoneData.serial_number){ 
+          alert('يرجى ملء جميع الحقول المطلوبة'); 
+          if (addUsedPhoneBtn) {
+            addUsedPhoneBtn.disabled = false;
+            addUsedPhoneBtn.innerHTML = originalText;
+          }
+          isProcessingUsedPhone = false;
+          return false; 
+        }
+        if(phoneData.purchase_price<=0 || phoneData.selling_price<=0){ 
+          alert('يرجى إدخال أسعار صحيحة'); 
+          if (addUsedPhoneBtn) {
+            addUsedPhoneBtn.disabled = false;
+            addUsedPhoneBtn.innerHTML = originalText;
+          }
+          isProcessingUsedPhone = false;
+          return false; 
+        }
+        if(!phoneData.phone_condition){ 
+          alert('يرجى اختيار حالة الهاتف'); 
+          if (addUsedPhoneBtn) {
+            addUsedPhoneBtn.disabled = false;
+            addUsedPhoneBtn.innerHTML = originalText;
+          }
+          isProcessingUsedPhone = false;
+          return false; 
+        }
 
         // حفظ سريع محلي لتغذية صفحة الطباعة فورًا
         localStorage.setItem('lastAddedPhone', JSON.stringify(phoneData));
@@ -482,6 +536,7 @@
             setTimeout(() => {
               window.location.href = 'search.html';
             }, 2000);
+            isProcessingUsedPhone = false;
             return true;
           }
         } else {
@@ -498,14 +553,40 @@
           }
 
           if(savedOK){
+            isProcessingUsedPhone = false;
+            if (addUsedPhoneBtn) {
+              addUsedPhoneBtn.disabled = false;
+              addUsedPhoneBtn.innerHTML = originalText;
+            }
             const shouldPrint = confirm('✅ تم إضافة الهاتف المستعمل!\n\nهل تريد طباعة الباركود؟');
             if(shouldPrint){ window.location.href = `print_barcode.html?phone_number=${encodeURIComponent(phoneData.phone_number)}`; }
             return true;
           }
         }
-        alert('❌ تعذّر الحفظ'); return false;
+        alert('❌ تعذّر الحفظ');
+        if (addUsedPhoneBtn) {
+          addUsedPhoneBtn.disabled = false;
+          addUsedPhoneBtn.innerHTML = originalText;
+        }
+        isProcessingUsedPhone = false;
+        return false;
 
-      }catch(err){ console.error(err); alert('❌ حدث خطأ في حفظ الهاتف.'); return false; }
+      }catch(err){ 
+        console.error(err); 
+        alert('❌ حدث خطأ في حفظ الهاتف.');
+        if (addUsedPhoneBtn) {
+          addUsedPhoneBtn.disabled = false;
+          addUsedPhoneBtn.innerHTML = originalText;
+        }
+        isProcessingUsedPhone = false;
+        return false; 
+      } finally {
+        // Ensure button is re-enabled even if there's an unexpected error
+        if (!isProcessingUsedPhone && addUsedPhoneBtn) {
+          addUsedPhoneBtn.disabled = false;
+          addUsedPhoneBtn.innerHTML = originalText;
+        }
+      }
     }
 
     // Add input validation for customer ID, phone, and battery age

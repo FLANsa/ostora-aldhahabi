@@ -176,7 +176,7 @@
               </div>
 
               <div class="text-center">
-                <button type="submit" class="btn btn-primary">إضافة الهاتف الجديد</button>
+                <button type="submit" class="btn btn-primary" id="add_phone_btn">إضافة الهاتف الجديد</button>
                 <a href="dashboard.html" class="btn btn-secondary">عودة للوحة التحكم</a>
               </div>
             </form>
@@ -371,7 +371,22 @@
       return String(next).padStart(6,'0');
     }
 
+    let isProcessingPhone = false; // Global flag to prevent multiple submissions
+
     async function savePhoneToFirebase(){
+      if (isProcessingPhone) {
+        console.log('⏳ عملية إضافة الهاتف قيد المعالجة بالفعل...');
+        return false;
+      }
+      
+      isProcessingPhone = true;
+      const addPhoneBtn = document.getElementById('add_phone_btn');
+      const originalText = addPhoneBtn ? addPhoneBtn.innerHTML : '';
+      if (addPhoneBtn) {
+        addPhoneBtn.disabled = true;
+        addPhoneBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> جاري المعالجة...';
+      }
+
       try{
         // Validate customer ID and phone number
         const customerId = document.getElementById('customer_id').value.trim();
@@ -380,12 +395,22 @@
         if (!customerId || customerId.length !== 10 || !/^[0-9]{10}$/.test(customerId)) {
           alert('رقم الهوية/الإقامة مطلوب ويجب أن يكون 10 أرقام');
           document.getElementById('customer_id').focus();
+          if (addPhoneBtn) {
+            addPhoneBtn.disabled = false;
+            addPhoneBtn.innerHTML = originalText;
+          }
+          isProcessingPhone = false;
           return false;
         }
         
         if (!customerPhone || customerPhone.length !== 10 || !/^[0-9]{10}$/.test(customerPhone)) {
           alert('رقم هاتف العميل مطلوب ويجب أن يكون 10 أرقام');
           document.getElementById('customer_phone').focus();
+          if (addPhoneBtn) {
+            addPhoneBtn.disabled = false;
+            addPhoneBtn.innerHTML = originalText;
+          }
+          isProcessingPhone = false;
           return false;
         }
 
@@ -415,8 +440,24 @@
           date_added: new Date().toISOString()
         };
 
-        if(!phoneData.brand || !phoneData.model || !phoneData.serial_number){ alert('يرجى ملء جميع الحقول المطلوبة'); return false; }
-        if(phoneData.purchase_price<=0 || phoneData.selling_price<=0){ alert('يرجى إدخال أسعار صحيحة'); return false; }
+        if(!phoneData.brand || !phoneData.model || !phoneData.serial_number){ 
+          alert('يرجى ملء جميع الحقول المطلوبة'); 
+          if (addPhoneBtn) {
+            addPhoneBtn.disabled = false;
+            addPhoneBtn.innerHTML = originalText;
+          }
+          isProcessingPhone = false;
+          return false; 
+        }
+        if(phoneData.purchase_price<=0 || phoneData.selling_price<=0){ 
+          alert('يرجى إدخال أسعار صحيحة'); 
+          if (addPhoneBtn) {
+            addPhoneBtn.disabled = false;
+            addPhoneBtn.innerHTML = originalText;
+          }
+          isProcessingPhone = false;
+          return false; 
+        }
 
         // handoff سريع للملصق
         localStorage.setItem('lastAddedPhone', JSON.stringify(phoneData));
@@ -448,6 +489,7 @@
             setTimeout(() => {
               window.location.href = 'search.html';
             }, 2000);
+            isProcessingPhone = false;
             return true;
           }
         } else {
@@ -464,14 +506,40 @@
           }
           
           if(savedOK){
+            isProcessingPhone = false;
+            if (addPhoneBtn) {
+              addPhoneBtn.disabled = false;
+              addPhoneBtn.innerHTML = originalText;
+            }
             const shouldPrint = confirm('✅ تم إضافة الهاتف!\n\nهل تريد طباعة الباركود؟');
             if(shouldPrint){ window.location.href = `print_barcode.html?phone_number=${encodeURIComponent(phoneData.phone_number)}`; }
             return true;
           }
         }
-        alert('❌ تعذّر الحفظ'); return false;
+        alert('❌ تعذّر الحفظ');
+        if (addPhoneBtn) {
+          addPhoneBtn.disabled = false;
+          addPhoneBtn.innerHTML = originalText;
+        }
+        isProcessingPhone = false;
+        return false;
 
-      }catch(err){ console.error(err); alert('❌ حدث خطأ في حفظ الهاتف.'); return false; }
+      }catch(err){ 
+        console.error(err); 
+        alert('❌ حدث خطأ في حفظ الهاتف.');
+        if (addPhoneBtn) {
+          addPhoneBtn.disabled = false;
+          addPhoneBtn.innerHTML = originalText;
+        }
+        isProcessingPhone = false;
+        return false; 
+      } finally {
+        // Ensure button is re-enabled even if there's an unexpected error
+        if (!isProcessingPhone && addPhoneBtn) {
+          addPhoneBtn.disabled = false;
+          addPhoneBtn.innerHTML = originalText;
+        }
+      }
     }
 
     // Add input validation for customer ID and phone
