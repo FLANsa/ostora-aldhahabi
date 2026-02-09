@@ -1065,9 +1065,10 @@
                 totalPartCost = Number(job.totalPartCost) || 0;
             }
 
-            // تأكيد توفر البيانات الأساسية
-            if (!totalPartCost || !job.amountCharged || !job.techId) {
-                showAlert('error', 'يرجى التأكد من ملء جميع البيانات المطلوبة قبل إتمام العملية');
+            // تأكيد توفر البيانات الأساسية (القطع اختيارية، المبلغ المحصل والفني إلزاميان)
+            const hasAmount = job.amountCharged != null && Number(job.amountCharged) >= 0;
+            if (!hasAmount || !job.techId) {
+                showAlert('error', 'يرجى التأكد من إدخال المبلغ المحصل واختيار الفني قبل إتمام العملية');
                 return;
             }
 
