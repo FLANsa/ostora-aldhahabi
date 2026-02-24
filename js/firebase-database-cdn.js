@@ -7,10 +7,12 @@ import {
   deleteDoc, 
   getDocs, 
   getDoc, 
+  setDoc,
   query, 
   where, 
   orderBy,
   onSnapshot,
+  runTransaction,
   serverTimestamp 
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 
@@ -21,10 +23,50 @@ class FirebaseDatabase {
   }
 
   // ===== إدارة الهواتف =====
+  /**
+   * توليد الرقم التالي الفريد للباركود (phone_number) باستخدام عداد في Firebase.
+   * يمنع التكرار بين الأجهزة والتبويبات.
+   * عند أول استخدام يُهيّأ العداد من أكبر phone_number موجود في الهواتف.
+   * @returns {Promise<string>} رقم باركود بصيغة 6 أرقام (مثل 000001)
+   */
+  async getNextPhoneNumber() {
+    const counterRef = doc(this.db, 'counters', 'phoneBarcode');
+    const counterSnap = await getDoc(counterRef);
+    if (!counterSnap.exists()) {
+      const phones = await this.getPhones();
+      let maxNum = 0;
+      phones.forEach((p) => {
+        const n = p.phone_number;
+        const num = typeof n === 'number' ? n : parseInt(String(n).replace(/\D/g, ''), 10);
+        if (!isNaN(num) && num > maxNum) maxNum = num;
+      });
+      await setDoc(counterRef, { lastNumber: maxNum, updatedAt: serverTimestamp() });
+    }
+    const nextNumber = await runTransaction(this.db, async (transaction) => {
+      const snap = await transaction.get(counterRef);
+      const last = snap.exists() && typeof snap.data().lastNumber === 'number' ? snap.data().lastNumber : 0;
+      const next = last + 1;
+      transaction.set(counterRef, { lastNumber: next, updatedAt: serverTimestamp() });
+      return next;
+    });
+    return String(nextNumber).padStart(6, '0');
+  }
+
   async addPhone(phoneData) {
     try {
+      const phoneNumber = phoneData.phone_number != null ? String(phoneData.phone_number).trim() : '';
+      if (!phoneNumber) {
+        throw new Error('رقم الباركود (phone_number) مطلوب');
+      }
+      const normalized = phoneNumber.padStart(6, '0');
+      const q = query(collection(this.db, 'phones'), where('phone_number', '==', normalized));
+      const existing = await getDocs(q);
+      if (!existing.empty) {
+        throw new Error('رقم الباركود مستخدم مسبقاً. يرجى عدم إعادة استخدام نفس الرقم.');
+      }
       const docRef = await addDoc(collection(this.db, 'phones'), {
         ...phoneData,
+        phone_number: normalized,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });

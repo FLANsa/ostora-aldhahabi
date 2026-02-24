@@ -251,13 +251,11 @@
       }
     }catch{}
 
-    // Finally, generate a new label if nothing provided
-    const generated = (() => {
-      let last = localStorage.getItem('lastDeviceNumber')||'0';
-      const next = (parseInt(last,10)+1); localStorage.setItem('lastDeviceNumber', String(next));
-      return String(next).padStart(6,'0');
-    })();
-    fillSticker({ phone_number: generated, memory:'32GB', battery:'100' });
+    // لا يتم توليد رقم جديد هنا لتفادي استهلاك تسلسل الباركود وتداخله مع إضافة الهواتف
+    fillSticker({ phone_number: '------', memory: '-', battery: '-' });
+    if (typeof alert === 'function') {
+      alert('لم يُمرّر رقم جهاز. افتح هذه الصفحة من "إضافة هاتف" بعد الحفظ، أو أضف في الرابط: ?phone_number=رقم_الجهاز');
+    }
   }
 
   document.addEventListener('DOMContentLoaded', loadPhoneData);

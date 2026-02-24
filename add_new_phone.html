@@ -420,7 +420,22 @@
           return false;
         }
 
-        const phone_number = generatePhoneNumber();
+        let phone_number;
+        if (window.editingPhoneId && window.editingPhoneNumber) {
+          phone_number = window.editingPhoneNumber;
+        } else if (window.storage && window.storage.isFirebaseAvailable && window.firebaseDatabase && typeof window.firebaseDatabase.getNextPhoneNumber === 'function') {
+          try {
+            phone_number = await window.firebaseDatabase.getNextPhoneNumber();
+          } catch (e) {
+            console.error('خطأ في توليد رقم الباركود من Firebase:', e);
+            alert('تعذّر توليد رقم الباركود. تأكد من الاتصال ثم أعد المحاولة.');
+            if (addPhoneBtn) { addPhoneBtn.disabled = false; addPhoneBtn.innerHTML = originalText; }
+            isProcessingPhone = false;
+            return false;
+          }
+        } else {
+          phone_number = generatePhoneNumber();
+        }
         const purchase_price = parseArabicNumber(document.getElementById('purchase_price').value);
         const selling_price = parseArabicNumber(document.getElementById('selling_price').value);
 
@@ -615,8 +630,9 @@
           document.title = 'تعديل هاتف جديد — أسطورة الذهبي';
           document.querySelector('h2').textContent = 'تعديل هاتف جديد';
           
-          // حفظ معرف الهاتف للتعديل
+          // حفظ معرف الهاتف ورقم الباركود للتعديل (لعدم توليد رقم جديد عند الحفظ)
           window.editingPhoneId = phone.id || phone.phone_number;
+          window.editingPhoneNumber = phone.phone_number || '';
           
           showAlert('info', 'تم تحميل بيانات الهاتف للتعديل');
         } else {
