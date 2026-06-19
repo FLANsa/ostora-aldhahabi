@@ -133,6 +133,19 @@ class FirebaseStorageManager {
         return phoneId;
       } catch (error) {
         console.error('Error adding phone to Firebase:', error);
+        if (
+          this.firebaseDB &&
+          typeof this.firebaseDB.isQuotaExceededError === 'function' &&
+          this.firebaseDB.isQuotaExceededError(error) &&
+          typeof this.firebaseDB.addPhoneDirect === 'function'
+        ) {
+          try {
+            console.warn('⚠️ Firebase read quota hit while saving phone. Retrying direct Firestore write.');
+            return await this.firebaseDB.addPhoneDirect(phone);
+          } catch (directError) {
+            console.error('Error adding phone directly to Firebase:', directError);
+          }
+        }
         return false;
       }
     }
@@ -143,6 +156,20 @@ class FirebaseStorageManager {
     phone.date_added = new Date().toISOString();
     phones.push(phone);
     return this.setPhones(phones);
+  }
+
+  async addPhoneDirect(phone) {
+    if (this.isFirebaseAvailable && typeof this.firebaseDB.addPhoneDirect === 'function') {
+      try {
+        phone.date_added = new Date();
+        return await this.firebaseDB.addPhoneDirect(phone);
+      } catch (error) {
+        console.error('Error adding phone directly to Firebase:', error);
+        return false;
+      }
+    }
+
+    return this.addPhone(phone);
   }
 
   async updatePhone(phoneId, updatedPhone) {

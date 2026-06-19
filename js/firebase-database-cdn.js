@@ -22,6 +22,159 @@ class FirebaseDatabase {
     this.auth = window.firebaseAuth;
   }
 
+  snapshotToArray(snapshot) {
+    const rows = [];
+    snapshot.forEach((documentSnapshot) => {
+      rows.push({ id: documentSnapshot.id, ...documentSnapshot.data() });
+    });
+    return rows;
+  }
+
+  toDate(value) {
+    if (!value) return null;
+    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+    if (typeof value.toDate === 'function') {
+      const date = value.toDate();
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+    if (typeof value.seconds === 'number') {
+      const date = new Date(value.seconds * 1000);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  normalizeDateTo(value) {
+    const date = this.toDate(value);
+    if (!date) return null;
+
+    const endDate = new Date(date);
+    if (
+      endDate.getHours() === 0 &&
+      endDate.getMinutes() === 0 &&
+      endDate.getSeconds() === 0 &&
+      endDate.getMilliseconds() === 0
+    ) {
+      endDate.setHours(23, 59, 59, 999);
+    }
+    return endDate;
+  }
+
+  isMissingIndexError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return error?.code === 'failed-precondition' || message.includes('index');
+  }
+
+  async getCollectionRows(collectionName) {
+    const snapshot = await getDocs(collection(this.db, collectionName));
+    return this.snapshotToArray(snapshot);
+  }
+
+  matchesDateRange(value, dateFrom, dateTo) {
+    if (!dateFrom && !dateTo) return true;
+
+    const rowDate = this.toDate(value);
+    if (!rowDate) return false;
+
+    const fromDate = this.toDate(dateFrom);
+    const toDate = this.normalizeDateTo(dateTo);
+
+    if (fromDate && rowDate < fromDate) return false;
+    if (toDate && rowDate > toDate) return false;
+    return true;
+  }
+
+  sortByDateDesc(rows, fieldName) {
+    rows.sort((a, b) => {
+      const dateA = this.toDate(a[fieldName]) || new Date(0);
+      const dateB = this.toDate(b[fieldName]) || new Date(0);
+      return dateB - dateA;
+    });
+    return rows;
+  }
+
+  maintenanceJobMatchesFilters(job, filters) {
+    if (filters.status && job.status !== filters.status) return false;
+    if (filters.techId && job.techId !== filters.techId) return false;
+    if (!this.matchesDateRange(job.visitDate, filters.dateFrom, filters.dateTo)) return false;
+
+    if (filters.repId) {
+      if (job.repId === filters.repId) return true;
+      if (Array.isArray(job.parts)) {
+        return job.parts.some((part) => part.repId === filters.repId);
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  paymentMatchesFilters(payment, filters) {
+    if (filters.entityType && payment.entityType !== filters.entityType) return false;
+    if (filters.entityId && payment.entityId !== filters.entityId) return false;
+    return this.matchesDateRange(payment.paymentDate, filters.dateFrom, filters.dateTo);
+  }
+
+  isQuotaExceededError(error) {
+    const message = String(error?.message || '').toLowerCase();
+    return (
+      error?.code === 'resource-exhausted' ||
+      message.includes('quota exceeded') ||
+      message.includes('resource-exhausted')
+    );
+  }
+
+  parsePhoneNumber(value) {
+    const number = typeof value === 'number'
+      ? value
+      : parseInt(String(value || '').replace(/\D/g, ''), 10);
+    return Number.isFinite(number) ? number : 0;
+  }
+
+  formatPhoneNumber(value) {
+    return String(this.parsePhoneNumber(value)).padStart(6, '0');
+  }
+
+  normalizePhoneNumber(value) {
+    const phoneNumber = value != null ? String(value).trim() : '';
+    if (!phoneNumber) {
+      throw new Error('رقم الباركود (phone_number) مطلوب');
+    }
+    return this.formatPhoneNumber(phoneNumber);
+  }
+
+  getCounterNumber(data = {}) {
+    return this.parsePhoneNumber(
+      data.lastPhoneNumber ??
+      data.lastNumber ??
+      data.value ??
+      0
+    );
+  }
+
+  async getHighestPhoneNumber() {
+    const phonesSnapshot = await getDocs(collection(this.db, 'phones'));
+    let maxNumber = 0;
+
+    phonesSnapshot.forEach((documentSnapshot) => {
+      const number = this.parsePhoneNumber(documentSnapshot.data().phone_number);
+      if (number > maxNumber) maxNumber = number;
+    });
+
+    console.log('📱 Highest phone_number in Firestore:', maxNumber);
+    return maxNumber;
+  }
+
+  async getNextPhoneNumberFromPhones() {
+    const highestNumber = await this.getHighestPhoneNumber();
+    const nextNumber = highestNumber + 1;
+    const formatted = this.formatPhoneNumber(nextNumber);
+    console.warn('⚠️ Barcode counter unavailable. Using Firestore phones fallback:', formatted);
+    return formatted;
+  }
+
   // ===== إدارة الهواتف =====
   /**
    * توليد الرقم التالي الفريد للباركود (phone_number) باستخدام عداد في Firebase.
@@ -30,35 +183,45 @@ class FirebaseDatabase {
    * @returns {Promise<string>} رقم باركود بصيغة 6 أرقام (مثل 000001)
    */
   async getNextPhoneNumber() {
-    const counterRef = doc(this.db, 'counters', 'phoneBarcode');
-    const counterSnap = await getDoc(counterRef);
-    if (!counterSnap.exists()) {
-      const phones = await this.getPhones();
-      let maxNum = 0;
-      phones.forEach((p) => {
-        const n = p.phone_number;
-        const num = typeof n === 'number' ? n : parseInt(String(n).replace(/\D/g, ''), 10);
-        if (!isNaN(num) && num > maxNum) maxNum = num;
+    const counterRef = doc(this.db, 'counters', 'phoneNumber');
+
+    try {
+      const counterSnap = await getDoc(counterRef);
+      if (!counterSnap.exists()) {
+        const maxNumber = await this.getHighestPhoneNumber();
+        await setDoc(counterRef, {
+          lastPhoneNumber: maxNumber,
+          lastNumber: maxNumber,
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      const nextNumber = await runTransaction(this.db, async (transaction) => {
+        const snap = await transaction.get(counterRef);
+        const last = snap.exists() ? this.getCounterNumber(snap.data()) : 0;
+        const next = last + 1;
+        transaction.set(counterRef, {
+          lastPhoneNumber: next,
+          lastNumber: next,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+        return next;
       });
-      await setDoc(counterRef, { lastNumber: maxNum, updatedAt: serverTimestamp() });
+
+      return this.formatPhoneNumber(nextNumber);
+    } catch (error) {
+      if (this.isQuotaExceededError(error)) {
+        console.warn('⚠️ Barcode counter quota exceeded. Continuing from Firestore phones collection.', error);
+        return this.getNextPhoneNumberFromPhones();
+      }
+
+      throw error;
     }
-    const nextNumber = await runTransaction(this.db, async (transaction) => {
-      const snap = await transaction.get(counterRef);
-      const last = snap.exists() && typeof snap.data().lastNumber === 'number' ? snap.data().lastNumber : 0;
-      const next = last + 1;
-      transaction.set(counterRef, { lastNumber: next, updatedAt: serverTimestamp() });
-      return next;
-    });
-    return String(nextNumber).padStart(6, '0');
   }
 
   async addPhone(phoneData) {
     try {
-      const phoneNumber = phoneData.phone_number != null ? String(phoneData.phone_number).trim() : '';
-      if (!phoneNumber) {
-        throw new Error('رقم الباركود (phone_number) مطلوب');
-      }
-      const normalized = phoneNumber.padStart(6, '0');
+      const normalized = this.normalizePhoneNumber(phoneData.phone_number);
       const q = query(collection(this.db, 'phones'), where('phone_number', '==', normalized));
       const existing = await getDocs(q);
       if (!existing.empty) {
@@ -74,6 +237,23 @@ class FirebaseDatabase {
       return docRef.id;
     } catch (error) {
       console.error('❌ Error adding phone:', error);
+      throw error;
+    }
+  }
+
+  async addPhoneDirect(phoneData) {
+    try {
+      const normalized = this.normalizePhoneNumber(phoneData.phone_number);
+      const docRef = await addDoc(collection(this.db, 'phones'), {
+        ...phoneData,
+        phone_number: normalized,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+      console.log('✅ Phone added directly with ID:', docRef.id, 'phone_number:', normalized);
+      return docRef.id;
+    } catch (error) {
+      console.error('❌ Error adding phone directly:', error);
       throw error;
     }
   }
@@ -596,168 +776,48 @@ class FirebaseDatabase {
 
   async getMaintenanceJobs(filters = {}) {
     try {
-      let q = collection(this.db, 'maintenanceJobs');
-      
-      // إذا كان هناك status و date range معاً، نحاول الاستعلام معاً أولاً
-      // وإذا فشل بسبب عدم وجود فهرس، نستخدم حل بديل
-      const hasStatusAndDateRange = filters.status && (filters.dateFrom || filters.dateTo);
-      
-      if (hasStatusAndDateRange) {
-        try {
-          // محاولة الاستعلام الكامل مع الفهرس
-          // ملاحظة: لا نستخدم repId في Firebase query لأن البحث يجب أن يشمل parts[]
-          if (filters.status) {
-            q = query(q, where('status', '==', filters.status));
-          }
-          
-          if (filters.techId) {
-            q = query(q, where('techId', '==', filters.techId));
-          }
-          
-          if (filters.dateFrom) {
-            q = query(q, where('visitDate', '>=', filters.dateFrom));
-          }
-          
-          if (filters.dateTo) {
-            q = query(q, where('visitDate', '<=', filters.dateTo));
-          }
+      const dateFrom = this.toDate(filters.dateFrom);
+      const dateTo = this.normalizeDateTo(filters.dateTo);
+      const normalizedFilters = { ...filters, dateFrom, dateTo };
+      const constraints = [];
 
-          const querySnapshot = await getDocs(q);
-          let jobs = [];
-          querySnapshot.forEach(doc => {
-            jobs.push({ id: doc.id, ...doc.data() });
-          });
-          
-          // فلترة المندوب يدوياً (للبحث في parts[] أيضاً)
-          if (filters.repId) {
-            jobs = jobs.filter(job => {
-              if (job.repId === filters.repId) return true;
-              if (job.parts && Array.isArray(job.parts)) {
-                return job.parts.some(part => part.repId === filters.repId);
-              }
-              return false;
-            });
-          }
-          
-          // ترتيب النتائج يدوياً دائماً
-          jobs.sort((a, b) => {
-            const dateA = a.visitDate?.seconds ? new Date(a.visitDate.seconds * 1000) : new Date(a.visitDate);
-            const dateB = b.visitDate?.seconds ? new Date(b.visitDate.seconds * 1000) : new Date(b.visitDate);
-            return dateB - dateA; // ترتيب تنازلي
-          });
-          
-          console.log('✅ Maintenance jobs loaded:', jobs.length);
-          return jobs;
-        } catch (indexError) {
-          // إذا فشل بسبب عدم وجود فهرس، نستخدم حل بديل
-          if (indexError.code === 'failed-precondition' || indexError.message.includes('index')) {
-            console.warn('⚠️ Index not ready, using fallback query method');
-            
-            // الحل البديل: جلب جميع الوظائف بالحالة المطلوبة ثم تصفية يدوياً
-            let fallbackQuery = collection(this.db, 'maintenanceJobs');
-            if (filters.status) {
-              fallbackQuery = query(fallbackQuery, where('status', '==', filters.status));
-            }
-            
-            const fallbackSnapshot = await getDocs(fallbackQuery);
-            const allJobs = [];
-            fallbackSnapshot.forEach(doc => {
-              allJobs.push({ id: doc.id, ...doc.data() });
-            });
-            
-            // تصفية يدوياً حسب النطاق الزمني
-            let filteredJobs = allJobs;
-            
-            if (filters.dateFrom) {
-              const dateFrom = filters.dateFrom instanceof Date ? filters.dateFrom : new Date(filters.dateFrom);
-              filteredJobs = filteredJobs.filter(job => {
-                const jobDate = job.visitDate?.seconds ? new Date(job.visitDate.seconds * 1000) : new Date(job.visitDate);
-                return jobDate >= dateFrom;
-              });
-            }
-            
-            if (filters.dateTo) {
-              const dateTo = filters.dateTo instanceof Date ? filters.dateTo : new Date(filters.dateTo);
-              filteredJobs = filteredJobs.filter(job => {
-                const jobDate = job.visitDate?.seconds ? new Date(job.visitDate.seconds * 1000) : new Date(job.visitDate);
-                return jobDate <= dateTo;
-              });
-            }
-            
-            if (filters.repId) {
-              filteredJobs = filteredJobs.filter(job => {
-                // البحث في الهيكل القديم (repId)
-                if (job.repId === filters.repId) return true;
-                // البحث في الهيكل الجديد (parts[].repId)
-                if (job.parts && Array.isArray(job.parts)) {
-                  return job.parts.some(part => part.repId === filters.repId);
-                }
-                return false;
-              });
-            }
-            
-            if (filters.techId) {
-              filteredJobs = filteredJobs.filter(job => job.techId === filters.techId);
-            }
-            
-            // ترتيب النتائج يدوياً
-            filteredJobs.sort((a, b) => {
-              const dateA = a.visitDate?.seconds ? new Date(a.visitDate.seconds * 1000) : new Date(a.visitDate);
-              const dateB = b.visitDate?.seconds ? new Date(b.visitDate.seconds * 1000) : new Date(b.visitDate);
-              return dateB - dateA; // ترتيب تنازلي
-            });
-            
-            console.log('✅ Maintenance jobs loaded (fallback method):', filteredJobs.length);
-            return filteredJobs;
-          }
-          throw indexError;
-        }
-      } else {
-        // استعلام عادي بدون فهرس معقد
-        // ملاحظة: لا نستخدم repId في Firebase query لأن البحث يجب أن يشمل parts[]
-        if (filters.status) {
-          q = query(q, where('status', '==', filters.status));
-        }
-        
-        if (filters.techId) {
-          q = query(q, where('techId', '==', filters.techId));
-        }
-        
-        if (filters.dateFrom) {
-          q = query(q, where('visitDate', '>=', filters.dateFrom));
-        }
-        
-        if (filters.dateTo) {
-          q = query(q, where('visitDate', '<=', filters.dateTo));
-        }
-
-        const querySnapshot = await getDocs(q);
-        let jobs = [];
-        querySnapshot.forEach(doc => {
-          jobs.push({ id: doc.id, ...doc.data() });
-        });
-        
-        // فلترة المندوب يدوياً (للبحث في parts[] أيضاً)
-        if (filters.repId) {
-          jobs = jobs.filter(job => {
-            if (job.repId === filters.repId) return true;
-            if (job.parts && Array.isArray(job.parts)) {
-              return job.parts.some(part => part.repId === filters.repId);
-            }
-            return false;
-          });
-        }
-        
-        // ترتيب النتائج يدوياً دائماً
-        jobs.sort((a, b) => {
-          const dateA = a.visitDate?.seconds ? new Date(a.visitDate.seconds * 1000) : new Date(a.visitDate);
-          const dateB = b.visitDate?.seconds ? new Date(b.visitDate.seconds * 1000) : new Date(b.visitDate);
-          return dateB - dateA; // ترتيب تنازلي
-        });
-        
-        console.log('✅ Maintenance jobs loaded:', jobs.length);
-        return jobs;
+      if (filters.status) {
+        constraints.push(where('status', '==', filters.status));
       }
+
+      if (filters.techId) {
+        constraints.push(where('techId', '==', filters.techId));
+      }
+
+      if (dateFrom) {
+        constraints.push(where('visitDate', '>=', dateFrom));
+      }
+
+      if (dateTo) {
+        constraints.push(where('visitDate', '<=', dateTo));
+      }
+
+      const collectionRef = collection(this.db, 'maintenanceJobs');
+      const firestoreQuery = constraints.length > 0 ? query(collectionRef, ...constraints) : collectionRef;
+
+      let jobs;
+      try {
+        const querySnapshot = await getDocs(firestoreQuery);
+        jobs = this.snapshotToArray(querySnapshot);
+      } catch (queryError) {
+        if (!this.isMissingIndexError(queryError)) {
+          throw queryError;
+        }
+
+        console.warn('⚠️ Maintenance query index missing, loading collection then filtering locally');
+        jobs = await this.getCollectionRows('maintenanceJobs');
+      }
+
+      const filteredJobs = jobs.filter((job) => this.maintenanceJobMatchesFilters(job, normalizedFilters));
+      this.sortByDateDesc(filteredJobs, 'visitDate');
+
+      console.log('✅ Maintenance jobs loaded:', filteredJobs.length);
+      return filteredJobs;
     } catch (error) {
       console.error('❌ Error getting maintenance jobs:', error);
       throw error;
@@ -866,21 +926,20 @@ class FirebaseDatabase {
 
   async getSettlements(filters = {}) {
     try {
-      let query = collection(this.db, 'settlements');
-      
+      const constraints = [];
+
       if (filters.type) {
-        query = query(query, where('type', '==', filters.type));
-      }
-      
-      if (filters.status) {
-        query = query(query, where('status', '==', filters.status));
+        constraints.push(where('type', '==', filters.type));
       }
 
-      const querySnapshot = await getDocs(query);
-      const settlements = [];
-      querySnapshot.forEach(doc => {
-        settlements.push({ id: doc.id, ...doc.data() });
-      });
+      if (filters.status) {
+        constraints.push(where('status', '==', filters.status));
+      }
+
+      const collectionRef = collection(this.db, 'settlements');
+      const firestoreQuery = constraints.length > 0 ? query(collectionRef, ...constraints) : collectionRef;
+      const querySnapshot = await getDocs(firestoreQuery);
+      const settlements = this.snapshotToArray(querySnapshot);
       
       console.log('✅ Settlements loaded:', settlements.length);
       return settlements;
@@ -949,34 +1008,50 @@ class FirebaseDatabase {
 
   async getPayments(filters = {}) {
     try {
-      let q = collection(this.db, 'payments');
-      
-      if (filters.dateFrom) {
-        q = query(q, where('paymentDate', '>=', filters.dateFrom));
-      }
-      
-      if (filters.dateTo) {
-        q = query(q, where('paymentDate', '<=', filters.dateTo));
-      }
-      
-      if (filters.entityType) {
-        q = query(q, where('entityType', '==', filters.entityType));
-      }
-      
-      if (filters.entityId) {
-        q = query(q, where('entityId', '==', filters.entityId));
-      }
-      
-      q = query(q, orderBy('paymentDate', 'desc'));
+      const dateFrom = this.toDate(filters.dateFrom);
+      const dateTo = this.normalizeDateTo(filters.dateTo);
+      const normalizedFilters = { ...filters, dateFrom, dateTo };
+      const constraints = [];
 
-      const querySnapshot = await getDocs(q);
-      const payments = [];
-      querySnapshot.forEach(doc => {
-        payments.push({ id: doc.id, ...doc.data() });
-      });
-      
-      console.log('✅ Payments loaded:', payments.length);
-      return payments;
+      if (dateFrom) {
+        constraints.push(where('paymentDate', '>=', dateFrom));
+      }
+
+      if (dateTo) {
+        constraints.push(where('paymentDate', '<=', dateTo));
+      }
+
+      if (filters.entityType) {
+        constraints.push(where('entityType', '==', filters.entityType));
+      }
+
+      if (filters.entityId) {
+        constraints.push(where('entityId', '==', filters.entityId));
+      }
+
+      constraints.push(orderBy('paymentDate', 'desc'));
+
+      const collectionRef = collection(this.db, 'payments');
+      const firestoreQuery = query(collectionRef, ...constraints);
+
+      let payments;
+      try {
+        const querySnapshot = await getDocs(firestoreQuery);
+        payments = this.snapshotToArray(querySnapshot);
+      } catch (queryError) {
+        if (!this.isMissingIndexError(queryError)) {
+          throw queryError;
+        }
+
+        console.warn('⚠️ Payments query index missing, loading collection then filtering locally');
+        payments = await this.getCollectionRows('payments');
+      }
+
+      const filteredPayments = payments.filter((payment) => this.paymentMatchesFilters(payment, normalizedFilters));
+      this.sortByDateDesc(filteredPayments, 'paymentDate');
+
+      console.log('✅ Payments loaded:', filteredPayments.length);
+      return filteredPayments;
     } catch (error) {
       console.error('❌ Error getting payments:', error);
       throw error;

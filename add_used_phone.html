@@ -218,9 +218,9 @@
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 
   <!-- Firebase -->
-  <script type="module" src="js/firebase-config-cdn.js"></script>
-  <script type="module" src="js/firebase-database-cdn.js"></script>
-  <script type="module" src="js/firebase-storage-manager.js"></script>
+  <script type="module" src="js/firebase-config-cdn.js?v=20260619-barcode-fallback"></script>
+  <script type="module" src="js/firebase-database-cdn.js?v=20260619-barcode-fallback"></script>
+  <script type="module" src="js/firebase-storage-manager.js?v=20260619-barcode-fallback"></script>
 
   <script>
 
@@ -402,6 +402,23 @@
       return String(next).padStart(6,'0');
     }
 
+    async function getPhoneNumberAfterCounterFailure(error){
+      const isQuotaError = window.firebaseDatabase &&
+        typeof window.firebaseDatabase.isQuotaExceededError === 'function' &&
+        window.firebaseDatabase.isQuotaExceededError(error);
+
+      if (
+        isQuotaError &&
+        window.firebaseDatabase &&
+        typeof window.firebaseDatabase.getNextPhoneNumberFromPhones === 'function'
+      ) {
+        console.warn('⚠️ تعذر عداد الباركود بسبب quota. سيتم إكمال الرقم من collection phones.', error);
+        return await window.firebaseDatabase.getNextPhoneNumberFromPhones();
+      }
+
+      throw error;
+    }
+
     let isProcessingUsedPhone = false; // Global flag to prevent multiple submissions
 
     async function saveUsedPhoneToFirebase(){
@@ -466,10 +483,15 @@
             phone_number = await window.firebaseDatabase.getNextPhoneNumber();
           } catch (e) {
             console.error('خطأ في توليد رقم الباركود من Firebase:', e);
-            alert('تعذّر توليد رقم الباركود. تأكد من الاتصال ثم أعد المحاولة.');
-            if (addUsedPhoneBtn) { addUsedPhoneBtn.disabled = false; addUsedPhoneBtn.innerHTML = originalText; }
-            isProcessingUsedPhone = false;
-            return false;
+            try {
+              phone_number = await getPhoneNumberAfterCounterFailure(e);
+            } catch (fallbackError) {
+              console.error('تعذر الحصول على رقم الباركود من قاعدة البيانات:', fallbackError);
+              alert('تعذّر الحصول على رقم الباركود من قاعدة البيانات. تأكد من الاتصال ثم أعد المحاولة.');
+              if (addUsedPhoneBtn) { addUsedPhoneBtn.disabled = false; addUsedPhoneBtn.innerHTML = originalText; }
+              isProcessingUsedPhone = false;
+              return false;
+            }
           }
         } else {
           phone_number = generatePhoneNumber();
