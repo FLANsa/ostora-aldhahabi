@@ -19,9 +19,9 @@
   <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
 
   <!-- Firebase so we can read the phone back -->
-  <script type="module" src="js/firebase-config-cdn.js"></script>
-  <script type="module" src="js/firebase-database-cdn.js"></script>
-  <script type="module" src="js/firebase-storage-manager.js"></script>
+  <script type="module" src="js/firebase-config-cdn.js?v=20260619-label-layout"></script>
+  <script type="module" src="js/firebase-database-cdn.js?v=20260619-label-layout"></script>
+  <script type="module" src="js/firebase-storage-manager.js?v=20260619-label-layout"></script>
 
   <style>
     :root { --card-bg:#fff; --muted:#cfcfcf; }
@@ -32,13 +32,16 @@
     .card-header h3 { margin:0; font-size:1.1rem; font-weight:700; }
     .card-body { padding:20px; }
     .sticker-preview{ border:2px dashed var(--muted); padding:20px; background:#f9f9f9; border-radius:10px; display:flex; justify-content:center; margin-bottom:18px; }
-    .sticker{ width:6cm; height:3cm; background:#fff; border:1px solid #ddd; box-sizing:border-box; display:flex; flex-direction:column; padding:0.2cm; gap:0.15cm; }
-    .row2{ display:flex; flex-direction:column; align-items:center; text-align:center; width:33.333%; line-height:1.1; }
-    .label{ color:#222; font-weight:700; font-size:3.0mm; line-height:1.1; text-align:center; }
-    .value{ color:#000; font-weight:800; font-size:4.2mm; line-height:1.05; text-align:center; }
-    .shop{ text-align:center; font-weight:700; font-size:4.5mm; line-height:1.1; margin-bottom:0.1cm; }
-    .rows{ display:flex; flex-direction:row; gap:0.1cm; justify-content:space-between; margin-top:-0.2cm; }
-    .sticker-barcode canvas{ width:100%; height:auto; max-height:1.2cm; image-rendering:crisp-edges; image-rendering:pixelated; display:block; }
+    .sticker{ width:4cm; height:2.5cm; background:#fff; border:0; box-sizing:border-box; display:flex; flex-direction:column; align-items:stretch; padding:0.8mm 1.8mm 0.75mm; gap:0.28mm; overflow:hidden; direction:ltr; }
+    .shop{ color:#000; text-align:center; font-weight:900; font-size:3.85mm; line-height:1.12; direction:rtl; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .device-name{ color:#000; font-weight:800; font-size:2.65mm; line-height:1; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; direction:ltr; }
+    .rows{ display:grid; grid-template-columns:repeat(3, 1fr); align-items:end; column-gap:0.9mm; direction:ltr; }
+    .rows.no-battery{ grid-template-columns:1fr 1fr; column-gap:2.4mm; }
+    .row2{ display:flex; flex-direction:column; align-items:center; text-align:center; min-width:0; line-height:1; direction:rtl; }
+    .label{ color:#111; font-weight:900; font-size:2.15mm; line-height:1; text-align:center; white-space:nowrap; }
+    .value{ color:#000; font-weight:900; font-size:3.15mm; line-height:0.95; text-align:center; direction:ltr; white-space:nowrap; }
+    .sticker-barcode{ height:7.1mm; display:flex; align-items:center; justify-content:center; }
+    .sticker-barcode canvas{ width:100%; height:7.1mm !important; image-rendering:crisp-edges; image-rendering:pixelated; display:block; }
     .actions{ display:flex; gap:10px; flex-wrap:wrap; }
     .btn{ appearance:none; border:0; padding:10px 14px; border-radius:10px; cursor:pointer; font-weight:700; font-family:inherit; }
     .btn-primary{ background:#10b981; color:#fff; }
@@ -63,19 +66,20 @@
         <div class="sticker-preview">
           <div id="sticker" class="sticker">
             <div class="shop">أسطورة الذهبي</div>
+            <div class="device-name" id="device-name">جاري التحميل...</div>
             <div class="sticker-barcode"><canvas id="barcode-canvas"></canvas></div>
             <div class="rows">
               <div class="row2">
-                <div class="label">رقم الجهاز</div>
-                <div class="value" id="phone-number">جاري التحميل...</div>
+                <div class="label">الذاكرة</div>
+                <div class="value" id="phone-memory">جاري التحميل...</div>
               </div>
-              <div class="row2">
+              <div class="row2" id="battery-row">
                 <div class="label">نسبة البطارية</div>
                 <div class="value" id="battery-level">جاري التحميل...</div>
               </div>
               <div class="row2">
-                <div class="label">الذاكرة</div>
-                <div class="value" id="phone-memory">جاري التحميل...</div>
+                <div class="label">رقم الجهاز</div>
+                <div class="value" id="phone-number">جاري التحميل...</div>
               </div>
             </div>
           </div><!-- /sticker -->
@@ -98,11 +102,14 @@
   function generateBarcode(code){
     const canvas = document.getElementById('barcode-canvas');
     if(!canvas || !window.JsBarcode) return;
-    JsBarcode(canvas, String(code||'').trim(), {
+    const barcodeValue = String(code||'').trim();
+    canvas.dataset.barcodeValue = barcodeValue;
+    JsBarcode(canvas, barcodeValue, {
       format:"CODE128",
-      width:3,
-      height:35,
+      width:2.05,
+      height:36,
       displayValue:false,
+      margin:0,
       background:"#ffffff",
       lineColor:"#000000"
     });
@@ -148,6 +155,9 @@
 
   function valuesFromPhone(phone){
     const phone_number = phone?.phone_number || phone?.barcode || phone?.id || '';
+    const brand = phone?.brand || phone?.manufacturer || '';
+    const model = phone?.model || '';
+    const deviceName = `${brand} ${model}`.trim() || '-';
     const memory = phone?.phone_memory || phone?.memory || phone?.storage || '-';
     // Hide battery for new phones, show for used phones
     let battery = '-';
@@ -158,19 +168,23 @@
     } else if (phone?.age != null) {
       battery = String(phone.age); // تم الحفظ من صفحة المستعمل كـ battery_level أيضاً
     }
-    return { phone_number, memory, battery };
+    return { phone_number, deviceName, memory, battery };
   }
 
-  function fillSticker({phone_number, memory, battery}){
+  function fillSticker({phone_number, deviceName, memory, battery}){
+    document.getElementById('device-name').textContent = deviceName || '-';
     document.getElementById('phone-number').textContent = phone_number || '-';
     document.getElementById('phone-memory').textContent = memory || '-';
     
     // Hide battery level row for new phones (when battery is empty)
-    const batteryRow = document.querySelector('.row2:nth-child(2)'); // Second row (battery)
+    const batteryRow = document.getElementById('battery-row');
+    const rows = document.querySelector('.rows');
     if (battery === '') {
       batteryRow.style.display = 'none';
+      rows.classList.add('no-battery');
     } else {
       batteryRow.style.display = 'flex';
+      rows.classList.remove('no-battery');
       document.getElementById('battery-level').textContent = battery || '-';
     }
     
@@ -236,7 +250,7 @@
         return;
       }else{
         // If not found anywhere, still show the code the user passed
-        fillSticker({ phone_number: pn, memory:'-', battery:'-' });
+        fillSticker({ phone_number: pn, deviceName:'-', memory:'-', battery:'' });
         alert('لم يتم العثور على بيانات الهاتف في القاعدة، تم استخدام رقم الجهاز فقط.');
         return;
       }
@@ -252,7 +266,7 @@
     }catch{}
 
     // لا يتم توليد رقم جديد هنا لتفادي استهلاك تسلسل الباركود وتداخله مع إضافة الهواتف
-    fillSticker({ phone_number: '------', memory: '-', battery: '-' });
+    fillSticker({ phone_number: '------', deviceName: '-', memory: '-', battery: '' });
     if (typeof alert === 'function') {
       alert('لم يُمرّر رقم جهاز. افتح هذه الصفحة من "إضافة هاتف" بعد الحفظ، أو أضف في الرابط: ?phone_number=رقم_الجهاز');
     }
