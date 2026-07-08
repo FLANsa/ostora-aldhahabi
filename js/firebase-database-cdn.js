@@ -16,10 +16,102 @@ import {
   serverTimestamp 
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
 
+// ===== طبقة تقليل قراءات Firestore =====
+// تخزين مؤقت لكل مجموعة في sessionStorage (لكل تبويب) مع صلاحية زمنية،
+// ويُمسح تلقائياً عند أي كتابة على نفس المجموعة من هذا التبويب.
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_PREFIX = 'fsCache:';
+
+function readCache(key) {
+  try {
+    const raw = sessionStorage.getItem(CACHE_PREFIX + key);
+    if (!raw) return null;
+    const { t, rows } = JSON.parse(raw);
+    if (!t || Date.now() - t > CACHE_TTL_MS) return null;
+    return rows;
+  } catch (e) {
+    return null;
+  }
+}
+
+function writeCache(key, rows) {
+  try {
+    sessionStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ t: Date.now(), rows }));
+  } catch (e) {
+    // تجاهل امتلاء sessionStorage — سيُعاد الجلب من الخادم فقط
+  }
+}
+
+function bustCache(key) {
+  try {
+    sessionStorage.removeItem(CACHE_PREFIX + key);
+  } catch (e) { /* ignore */ }
+}
+
+// عدّاد قراءات Firestore للتشخيص (window.__fsReads)
+function trackReads(count) {
+  window.__fsReads = (window.__fsReads || 0) + count;
+}
+
+async function countedGetDocs(q) {
+  const snapshot = await getDocs(q);
+  trackReads(Math.max(snapshot.size, 1));
+  return snapshot;
+}
+
+async function countedGetDoc(ref) {
+  const snapshot = await getDoc(ref);
+  trackReads(1);
+  return snapshot;
+}
+
+// أغلفة الكتابة: تنفذ العملية ثم تمسح كاش المجموعة المعنية
+async function cAddDoc(colRef, data) {
+  const result = await addDoc(colRef, data);
+  bustCache(colRef.id);
+  return result;
+}
+
+async function cUpdateDoc(docRef, data) {
+  const result = await updateDoc(docRef, data);
+  bustCache(docRef.parent.id);
+  return result;
+}
+
+async function cDeleteDoc(docRef) {
+  const result = await deleteDoc(docRef);
+  bustCache(docRef.parent.id);
+  return result;
+}
+
 class FirebaseDatabase {
   constructor() {
     this.db = window.firebaseDB;
     this.auth = window.firebaseAuth;
+    this._inflight = {};
+  }
+
+  // جلب مجموعة عبر الكاش: يعيد النسخة المخزنة إن كانت صالحة،
+  // ويجمع الطلبات المتزامنة لنفس المجموعة في طلب واحد.
+  async cachedCollection(key, fetcher) {
+    const cached = readCache(key);
+    if (cached) {
+      console.log(`🗄️ ${key}: من الكاش (${cached.length}) بدون قراءات Firestore`);
+      return cached;
+    }
+    if (!this._inflight[key]) {
+      this._inflight[key] = fetcher()
+        .then((rows) => {
+          writeCache(key, rows);
+          delete this._inflight[key];
+          return rows;
+        })
+        .catch((error) => {
+          delete this._inflight[key];
+          throw error;
+        });
+    }
+    return this._inflight[key];
   }
 
   snapshotToArray(snapshot) {
@@ -68,7 +160,7 @@ class FirebaseDatabase {
   }
 
   async getCollectionRows(collectionName) {
-    const snapshot = await getDocs(collection(this.db, collectionName));
+    const snapshot = await countedGetDocs(collection(this.db, collectionName));
     return this.snapshotToArray(snapshot);
   }
 
@@ -155,11 +247,11 @@ class FirebaseDatabase {
   }
 
   async getHighestPhoneNumber() {
-    const phonesSnapshot = await getDocs(collection(this.db, 'phones'));
+    const phones = await this.getPhones();
     let maxNumber = 0;
 
-    phonesSnapshot.forEach((documentSnapshot) => {
-      const number = this.parsePhoneNumber(documentSnapshot.data().phone_number);
+    phones.forEach((phone) => {
+      const number = this.parsePhoneNumber(phone.phone_number);
       if (number > maxNumber) maxNumber = number;
     });
 
@@ -186,7 +278,7 @@ class FirebaseDatabase {
     const counterRef = doc(this.db, 'counters', 'phoneNumber');
 
     try {
-      const counterSnap = await getDoc(counterRef);
+      const counterSnap = await countedGetDoc(counterRef);
       if (!counterSnap.exists()) {
         const maxNumber = await this.getHighestPhoneNumber();
         await setDoc(counterRef, {
@@ -223,11 +315,11 @@ class FirebaseDatabase {
     try {
       const normalized = this.normalizePhoneNumber(phoneData.phone_number);
       const q = query(collection(this.db, 'phones'), where('phone_number', '==', normalized));
-      const existing = await getDocs(q);
+      const existing = await countedGetDocs(q);
       if (!existing.empty) {
         throw new Error('رقم الباركود مستخدم مسبقاً. يرجى عدم إعادة استخدام نفس الرقم.');
       }
-      const docRef = await addDoc(collection(this.db, 'phones'), {
+      const docRef = await cAddDoc(collection(this.db, 'phones'), {
         ...phoneData,
         phone_number: normalized,
         createdAt: serverTimestamp(),
@@ -244,7 +336,7 @@ class FirebaseDatabase {
   async addPhoneDirect(phoneData) {
     try {
       const normalized = this.normalizePhoneNumber(phoneData.phone_number);
-      const docRef = await addDoc(collection(this.db, 'phones'), {
+      const docRef = await cAddDoc(collection(this.db, 'phones'), {
         ...phoneData,
         phone_number: normalized,
         createdAt: serverTimestamp(),
@@ -260,13 +352,12 @@ class FirebaseDatabase {
 
   async getPhones() {
     try {
-      const phonesSnapshot = await getDocs(collection(this.db, 'phones'));
-      const phones = [];
-      phonesSnapshot.forEach((doc) => {
-        phones.push({ id: doc.id, ...doc.data() });
+      return await this.cachedCollection('phones', async () => {
+        const phonesSnapshot = await countedGetDocs(collection(this.db, 'phones'));
+        const phones = this.snapshotToArray(phonesSnapshot);
+        console.log('📱 Retrieved phones:', phones.length);
+        return phones;
       });
-      console.log('📱 Retrieved phones:', phones.length);
-      return phones;
     } catch (error) {
       console.error('❌ Error getting phones:', error);
       throw error;
@@ -275,7 +366,7 @@ class FirebaseDatabase {
 
   async updatePhone(phoneId, phoneData) {
     try {
-      await updateDoc(doc(this.db, 'phones', phoneId), {
+      await cUpdateDoc(doc(this.db, 'phones', phoneId), {
         ...phoneData,
         updatedAt: serverTimestamp()
       });
@@ -288,7 +379,7 @@ class FirebaseDatabase {
 
   async deletePhone(phoneId) {
     try {
-      await deleteDoc(doc(this.db, 'phones', phoneId));
+      await cDeleteDoc(doc(this.db, 'phones', phoneId));
       console.log('✅ Phone deleted:', phoneId);
     } catch (error) {
       console.error('❌ Error deleting phone:', error);
@@ -301,7 +392,7 @@ class FirebaseDatabase {
     try {
       console.log('🔥 Firebase: محاولة إضافة أكسسوار:', accessoryData);
       
-      const docRef = await addDoc(collection(this.db, 'accessories'), {
+      const docRef = await cAddDoc(collection(this.db, 'accessories'), {
         ...accessoryData,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
@@ -318,13 +409,12 @@ class FirebaseDatabase {
 
   async getAccessories() {
     try {
-      const accessoriesSnapshot = await getDocs(collection(this.db, 'accessories'));
-      const accessories = [];
-      accessoriesSnapshot.forEach((doc) => {
-        accessories.push({ id: doc.id, ...doc.data() });
+      return await this.cachedCollection('accessories', async () => {
+        const accessoriesSnapshot = await countedGetDocs(collection(this.db, 'accessories'));
+        const accessories = this.snapshotToArray(accessoriesSnapshot);
+        console.log('🛍️ Retrieved accessories:', accessories.length);
+        return accessories;
       });
-      console.log('🛍️ Retrieved accessories:', accessories.length);
-      return accessories;
     } catch (error) {
       console.error('❌ Error getting accessories:', error);
       throw error;
@@ -333,7 +423,7 @@ class FirebaseDatabase {
 
   async updateAccessory(accessoryId, accessoryData) {
     try {
-      await updateDoc(doc(this.db, 'accessories', accessoryId), {
+      await cUpdateDoc(doc(this.db, 'accessories', accessoryId), {
         ...accessoryData,
         updatedAt: serverTimestamp()
       });
@@ -346,7 +436,7 @@ class FirebaseDatabase {
 
   async deleteAccessory(accessoryId) {
     try {
-      await deleteDoc(doc(this.db, 'accessories', accessoryId));
+      await cDeleteDoc(doc(this.db, 'accessories', accessoryId));
       console.log('✅ Accessory deleted:', accessoryId);
     } catch (error) {
       console.error('❌ Error deleting accessory:', error);
@@ -357,7 +447,7 @@ class FirebaseDatabase {
   // ===== إدارة المبيعات =====
   async addSale(saleData) {
     try {
-      const docRef = await addDoc(collection(this.db, 'sales'), {
+      const docRef = await cAddDoc(collection(this.db, 'sales'), {
         ...saleData,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
@@ -372,15 +462,14 @@ class FirebaseDatabase {
 
   async getSales() {
     try {
-      const salesSnapshot = await getDocs(
-        query(collection(this.db, 'sales'), orderBy('createdAt', 'desc'))
-      );
-      const sales = [];
-      salesSnapshot.forEach((doc) => {
-        sales.push({ id: doc.id, ...doc.data() });
+      return await this.cachedCollection('sales', async () => {
+        const salesSnapshot = await countedGetDocs(
+          query(collection(this.db, 'sales'), orderBy('createdAt', 'desc'))
+        );
+        const sales = this.snapshotToArray(salesSnapshot);
+        console.log('💰 Retrieved sales:', sales.length);
+        return sales;
       });
-      console.log('💰 Retrieved sales:', sales.length);
-      return sales;
     } catch (error) {
       console.error('❌ Error getting sales:', error);
       throw error;
@@ -389,7 +478,7 @@ class FirebaseDatabase {
 
   async getSale(saleId) {
     try {
-      const saleDoc = await getDoc(doc(this.db, 'sales', saleId));
+      const saleDoc = await countedGetDoc(doc(this.db, 'sales', saleId));
       if (saleDoc.exists()) {
         return { id: saleDoc.id, ...saleDoc.data() };
       }
@@ -402,7 +491,7 @@ class FirebaseDatabase {
 
   async updateSale(saleId, saleData) {
     try {
-      await updateDoc(doc(this.db, 'sales', saleId), {
+      await cUpdateDoc(doc(this.db, 'sales', saleId), {
         ...saleData,
         updatedAt: serverTimestamp()
       });
@@ -415,7 +504,7 @@ class FirebaseDatabase {
 
   async deleteSale(saleId) {
     try {
-      await deleteDoc(doc(this.db, 'sales', saleId));
+      await cDeleteDoc(doc(this.db, 'sales', saleId));
       console.log('✅ Sale deleted:', saleId);
     } catch (error) {
       console.error('❌ Error deleting sale:', error);
@@ -426,7 +515,7 @@ class FirebaseDatabase {
   // ===== إدارة فئات الأكسسوارات =====
   async addAccessoryCategory(categoryData) {
     try {
-      const docRef = await addDoc(collection(this.db, 'accessory_categories'), {
+      const docRef = await cAddDoc(collection(this.db, 'accessory_categories'), {
         ...categoryData,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
@@ -441,13 +530,12 @@ class FirebaseDatabase {
 
   async getAccessoryCategories() {
     try {
-      const categoriesSnapshot = await getDocs(collection(this.db, 'accessory_categories'));
-      const categories = [];
-      categoriesSnapshot.forEach((doc) => {
-        categories.push({ id: doc.id, ...doc.data() });
+      return await this.cachedCollection('accessory_categories', async () => {
+        const categoriesSnapshot = await countedGetDocs(collection(this.db, 'accessory_categories'));
+        const categories = this.snapshotToArray(categoriesSnapshot);
+        console.log('📂 Retrieved categories:', categories.length);
+        return categories;
       });
-      console.log('📂 Retrieved categories:', categories.length);
-      return categories;
     } catch (error) {
       console.error('❌ Error getting categories:', error);
       throw error;
@@ -456,14 +544,14 @@ class FirebaseDatabase {
 
   async deleteAccessoryCategory(categoryName) {
     try {
-      const categoriesSnapshot = await getDocs(
+      const categoriesSnapshot = await countedGetDocs(
         query(collection(this.db, 'accessory_categories'), 
               where('arabic_name', '==', categoryName))
       );
       
       const deletePromises = [];
       categoriesSnapshot.forEach((doc) => {
-        deletePromises.push(deleteDoc(doc.ref));
+        deletePromises.push(cDeleteDoc(doc.ref));
       });
       
       await Promise.all(deletePromises);
@@ -478,7 +566,7 @@ class FirebaseDatabase {
   // ===== إدارة أنواع الهواتف =====
   async addPhoneType(phoneTypeData) {
     try {
-      const docRef = await addDoc(collection(this.db, 'phone_types'), {
+      const docRef = await cAddDoc(collection(this.db, 'phone_types'), {
         ...phoneTypeData,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
@@ -493,13 +581,12 @@ class FirebaseDatabase {
 
   async getPhoneTypes() {
     try {
-      const phoneTypesSnapshot = await getDocs(collection(this.db, 'phone_types'));
-      const phoneTypes = [];
-      phoneTypesSnapshot.forEach((doc) => {
-        phoneTypes.push({ id: doc.id, ...doc.data() });
+      return await this.cachedCollection('phone_types', async () => {
+        const phoneTypesSnapshot = await countedGetDocs(collection(this.db, 'phone_types'));
+        const phoneTypes = this.snapshotToArray(phoneTypesSnapshot);
+        console.log('📱 Retrieved phone types:', phoneTypes.length);
+        return phoneTypes;
       });
-      console.log('📱 Retrieved phone types:', phoneTypes.length);
-      return phoneTypes;
     } catch (error) {
       console.error('❌ Error getting phone types:', error);
       throw error;
@@ -508,7 +595,7 @@ class FirebaseDatabase {
 
   async deletePhoneType(brand, model) {
     try {
-      const phoneTypesSnapshot = await getDocs(
+      const phoneTypesSnapshot = await countedGetDocs(
         query(collection(this.db, 'phone_types'), 
               where('brand', '==', brand), 
               where('model', '==', model))
@@ -516,7 +603,7 @@ class FirebaseDatabase {
       
       const deletePromises = [];
       phoneTypesSnapshot.forEach((doc) => {
-        deletePromises.push(deleteDoc(doc.ref));
+        deletePromises.push(cDeleteDoc(doc.ref));
       });
       
       await Promise.all(deletePromises);
@@ -620,7 +707,7 @@ class FirebaseDatabase {
   // ===== إدارة المندوبين =====
   async addRep(repData) {
     try {
-      const docRef = await addDoc(collection(this.db, 'reps'), {
+      const docRef = await cAddDoc(collection(this.db, 'reps'), {
         ...repData,
         active: true,
         createdAt: serverTimestamp(),
@@ -636,13 +723,12 @@ class FirebaseDatabase {
 
   async getReps() {
     try {
-      const querySnapshot = await getDocs(collection(this.db, 'reps'));
-      const reps = [];
-      querySnapshot.forEach(doc => {
-        reps.push({ id: doc.id, ...doc.data() });
+      return await this.cachedCollection('reps', async () => {
+        const querySnapshot = await countedGetDocs(collection(this.db, 'reps'));
+        const reps = this.snapshotToArray(querySnapshot);
+        console.log('✅ Reps loaded:', reps.length);
+        return reps;
       });
-      console.log('✅ Reps loaded:', reps.length);
-      return reps;
     } catch (error) {
       console.error('❌ Error getting reps:', error);
       throw error;
@@ -652,7 +738,7 @@ class FirebaseDatabase {
   async updateRep(repId, repData) {
     try {
       const repRef = doc(this.db, 'reps', repId);
-      await updateDoc(repRef, {
+      await cUpdateDoc(repRef, {
         ...repData,
         updatedAt: serverTimestamp()
       });
@@ -666,7 +752,7 @@ class FirebaseDatabase {
   async deleteRep(repId) {
     try {
       const repRef = doc(this.db, 'reps', repId);
-      await deleteDoc(repRef);
+      await cDeleteDoc(repRef);
       console.log('✅ Rep deleted:', repId);
     } catch (error) {
       console.error('❌ Error deleting rep:', error);
@@ -677,7 +763,7 @@ class FirebaseDatabase {
   // ===== إدارة الفنيين =====
   async addTechnician(techData) {
     try {
-      const docRef = await addDoc(collection(this.db, 'technicians'), {
+      const docRef = await cAddDoc(collection(this.db, 'technicians'), {
         ...techData,
         active: true,
         defaultCommissionPercent: techData.defaultCommissionPercent || 0.5,
@@ -694,13 +780,12 @@ class FirebaseDatabase {
 
   async getTechnicians() {
     try {
-      const querySnapshot = await getDocs(collection(this.db, 'technicians'));
-      const technicians = [];
-      querySnapshot.forEach(doc => {
-        technicians.push({ id: doc.id, ...doc.data() });
+      return await this.cachedCollection('technicians', async () => {
+        const querySnapshot = await countedGetDocs(collection(this.db, 'technicians'));
+        const technicians = this.snapshotToArray(querySnapshot);
+        console.log('✅ Technicians loaded:', technicians.length);
+        return technicians;
       });
-      console.log('✅ Technicians loaded:', technicians.length);
-      return technicians;
     } catch (error) {
       console.error('❌ Error getting technicians:', error);
       throw error;
@@ -710,7 +795,7 @@ class FirebaseDatabase {
   async updateTechnician(techId, techData) {
     try {
       const techRef = doc(this.db, 'technicians', techId);
-      await updateDoc(techRef, {
+      await cUpdateDoc(techRef, {
         ...techData,
         updatedAt: serverTimestamp()
       });
@@ -724,7 +809,7 @@ class FirebaseDatabase {
   async deleteTechnician(techId) {
     try {
       const techRef = doc(this.db, 'technicians', techId);
-      await deleteDoc(techRef);
+      await cDeleteDoc(techRef);
       console.log('✅ Technician deleted:', techId);
     } catch (error) {
       console.error('❌ Error deleting technician:', error);
@@ -757,7 +842,7 @@ class FirebaseDatabase {
         jobData.techPercent !== undefined ? jobData.techPercent : 0
       );
 
-      const docRef = await addDoc(collection(this.db, 'maintenanceJobs'), {
+      const docRef = await cAddDoc(collection(this.db, 'maintenanceJobs'), {
         ...jobData,
         profit,
         techCommission,
@@ -797,21 +882,11 @@ class FirebaseDatabase {
         constraints.push(where('visitDate', '<=', dateTo));
       }
 
-      const collectionRef = collection(this.db, 'maintenanceJobs');
-      const firestoreQuery = constraints.length > 0 ? query(collectionRef, ...constraints) : collectionRef;
-
-      let jobs;
-      try {
-        const querySnapshot = await getDocs(firestoreQuery);
-        jobs = this.snapshotToArray(querySnapshot);
-      } catch (queryError) {
-        if (!this.isMissingIndexError(queryError)) {
-          throw queryError;
-        }
-
-        console.warn('⚠️ Maintenance query index missing, loading collection then filtering locally');
-        jobs = await this.getCollectionRows('maintenanceJobs');
-      }
+      // جلب المجموعة كاملة عبر الكاش ثم الفلترة محلياً —
+      // أرخص من استعلامات مفلترة متكررة عند كل تغيير فلتر
+      const jobs = await this.cachedCollection('maintenanceJobs', () =>
+        this.getCollectionRows('maintenanceJobs')
+      );
 
       const filteredJobs = jobs.filter((job) => this.maintenanceJobMatchesFilters(job, normalizedFilters));
       this.sortByDateDesc(filteredJobs, 'visitDate');
@@ -870,7 +945,7 @@ class FirebaseDatabase {
       }
 
       const jobRef = doc(this.db, 'maintenanceJobs', jobId);
-      await updateDoc(jobRef, {
+      await cUpdateDoc(jobRef, {
         ...jobData,
         updatedAt: serverTimestamp()
       });
@@ -884,7 +959,7 @@ class FirebaseDatabase {
   async getMaintenanceJob(jobId) {
     try {
       const jobRef = doc(this.db, 'maintenanceJobs', jobId);
-      const jobSnap = await getDoc(jobRef);
+      const jobSnap = await countedGetDoc(jobRef);
       if (jobSnap.exists()) {
         return { id: jobSnap.id, ...jobSnap.data() };
       } else {
@@ -899,7 +974,7 @@ class FirebaseDatabase {
   async deleteMaintenanceJob(jobId) {
     try {
       const jobRef = doc(this.db, 'maintenanceJobs', jobId);
-      await deleteDoc(jobRef);
+      await cDeleteDoc(jobRef);
       console.log('✅ Maintenance job deleted:', jobId);
     } catch (error) {
       console.error('❌ Error deleting maintenance job:', error);
@@ -910,7 +985,7 @@ class FirebaseDatabase {
   // ===== التسويات =====
   async createSettlement(settlementData) {
     try {
-      const docRef = await addDoc(collection(this.db, 'settlements'), {
+      const docRef = await cAddDoc(collection(this.db, 'settlements'), {
         ...settlementData,
         status: 'open',
         createdAt: serverTimestamp(),
@@ -938,7 +1013,7 @@ class FirebaseDatabase {
 
       const collectionRef = collection(this.db, 'settlements');
       const firestoreQuery = constraints.length > 0 ? query(collectionRef, ...constraints) : collectionRef;
-      const querySnapshot = await getDocs(firestoreQuery);
+      const querySnapshot = await countedGetDocs(firestoreQuery);
       const settlements = this.snapshotToArray(querySnapshot);
       
       console.log('✅ Settlements loaded:', settlements.length);
@@ -952,7 +1027,7 @@ class FirebaseDatabase {
   async markSettlementPaid(settlementId, notes = '') {
     try {
       const settlementRef = doc(this.db, 'settlements', settlementId);
-      await updateDoc(settlementRef, {
+      await cUpdateDoc(settlementRef, {
         status: 'paid',
         paidAt: serverTimestamp(),
         notes,
@@ -993,7 +1068,7 @@ class FirebaseDatabase {
   // ===== إدارة المدفوعات =====
   async addPayment(paymentData) {
     try {
-      const docRef = await addDoc(collection(this.db, 'payments'), {
+      const docRef = await cAddDoc(collection(this.db, 'payments'), {
         ...paymentData,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
@@ -1036,7 +1111,7 @@ class FirebaseDatabase {
 
       let payments;
       try {
-        const querySnapshot = await getDocs(firestoreQuery);
+        const querySnapshot = await countedGetDocs(firestoreQuery);
         payments = this.snapshotToArray(querySnapshot);
       } catch (queryError) {
         if (!this.isMissingIndexError(queryError)) {
@@ -1061,7 +1136,7 @@ class FirebaseDatabase {
   async updatePayment(paymentId, paymentData) {
     try {
       const paymentRef = doc(this.db, 'payments', paymentId);
-      await updateDoc(paymentRef, {
+      await cUpdateDoc(paymentRef, {
         ...paymentData,
         updatedAt: serverTimestamp()
       });
@@ -1075,7 +1150,7 @@ class FirebaseDatabase {
   async deletePayment(paymentId) {
     try {
       const paymentRef = doc(this.db, 'payments', paymentId);
-      await deleteDoc(paymentRef);
+      await cDeleteDoc(paymentRef);
       console.log('✅ Payment deleted:', paymentId);
     } catch (error) {
       console.error('❌ Error deleting payment:', error);
@@ -1262,13 +1337,14 @@ class FirebaseDatabase {
         { name: 'other', arabic_name: 'أخرى', description: 'فئات أخرى' }
       ];
 
-      // التحقق من وجود فئات الأكسسوارات
+      // التحقق من وجود كل فئة بالاسم (idempotent) لمنع التكرار عند السباق
       const existingCategories = await this.getAccessoryCategories();
-      if (existingCategories.length === 0) {
-        for (const category of defaultCategories) {
+      const existingNames = new Set(existingCategories.map((c) => c.name));
+      for (const category of defaultCategories) {
+        if (!existingNames.has(category.name)) {
           await this.addAccessoryCategory(category);
+          console.log('✅ تمت إضافة الفئة الافتراضية:', category.name);
         }
-        console.log('✅ تم إضافة فئات الأكسسوارات الافتراضية');
       }
 
       console.log('✅ Default data initialized successfully');
@@ -1281,11 +1357,7 @@ class FirebaseDatabase {
 // إنشاء instance واحد للاستخدام في جميع أنحاء التطبيق
 window.firebaseDatabase = new FirebaseDatabase();
 
-// تهيئة البيانات الافتراضية عند تحميل Firebase
-window.firebaseDatabase.initializeDefaultData()
-  .then(() => {
-    console.log('🔥 Firebase Database Manager initialized successfully!');
-  })
-  .catch(error => {
-    console.error('❌ Error initializing Firebase Database:', error);
-  });
+// ملاحظة: أزيل الاستدعاء التلقائي لـ initializeDefaultData() عند كل تحميل صفحة —
+// كان يكلف قراءة مجموعة الفئات كاملة في كل صفحة وسبّب تكرار الفئات عند السباق.
+// تُستدعى يدوياً عند الحاجة: window.firebaseDatabase.initializeDefaultData()
+console.log('🔥 Firebase Database Manager initialized successfully!');
