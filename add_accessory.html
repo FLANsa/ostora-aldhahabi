@@ -133,7 +133,6 @@
                         <i class="fas fa-barcode"></i> توليد
                       </button>
                     </div>
-                    <small class="form-text text-muted">يمكنك إدخال باركود مخصص أو توليد باركود فريد تلقائياً</small>
                   </div>
                 </div>
               </div>
@@ -394,6 +393,30 @@
       showAlert('success', `تم توليد باركود جديد: ${barcode}`);
     }
 
+    // معرّف قصير فريد يُخزَّن في barcode_id، بينما يبقى الباركود الذي أدخله المستخدم مرجعاً ظاهراً
+    async function buildShortBarcodeId(reference) {
+      const api = window.accessoryCode;
+      if (!api) return String(reference || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
+      let existing = [];
+      try {
+        const all = window.storage ? await window.storage.getAccessories() : null;
+        existing = Array.isArray(all) ? all : Object.values(all || {});
+      } catch (error) {
+        console.warn('تعذّر قراءة الأكسسوارات للتحقق من تفرد المعرّف:', error);
+      }
+      if (!existing.length) {
+        try { existing = JSON.parse(localStorage.getItem('accessories') || '[]'); } catch (error) {}
+      }
+      const taken = new Set(existing.flatMap(a => api.candidates(a)));
+      let id = api.shortId(reference);
+      let salt = 0;
+      while (id && taken.has(api.normalize(id)) && salt < 100) {
+        salt += 1;
+        id = api.shortId(`${reference}#${salt}`);
+      }
+      return id;
+    }
+
     // طباعة الباركود
     function printBarcode() {
       const barcode = document.getElementById('barcode').value.trim();
@@ -454,12 +477,14 @@
         const sellingPriceRaw = document.getElementById('selling_price').value;
         const quantityRaw = document.getElementById('quantity').value;
         
+        const referenceBarcode = document.getElementById('barcode').value.trim();
+        const shortBarcodeId = await buildShortBarcodeId(referenceBarcode);
         const accessoryData = {
           name: document.getElementById('name').value.trim(),
           arabic_name: document.getElementById('name').value.trim(), // استخدام نفس الاسم
           category: document.getElementById('category').value,
-          barcode: document.getElementById('barcode').value.trim(),
-          barcode_id: document.getElementById('barcode').value.trim().replace(/[^a-zA-Z0-9]/g, ''), // للبحث بدون رموز
+          barcode: referenceBarcode,
+          barcode_id: shortBarcodeId, // معرّف قصير قابل للمسح على ملصق 40x25mm
           quantity: parseInt(convertArabicToEnglishNumbers(quantityRaw)) || 0,
           quantity_in_stock: parseInt(convertArabicToEnglishNumbers(quantityRaw)) || 0, // إضافة quantity_in_stock
           purchase_price: parseArabicNumber(purchasePriceRaw),
@@ -512,8 +537,11 @@
             console.log('✅ تم حفظ الأكسسوار في Firebase بنجاح! ID:', accessoryId);
             console.log('📂 الفئة:', accessoryData.category);
             console.log('🏷️ الباركود:', accessoryData.barcode);
+            console.log('🏷️ المعرّف القصير:', accessoryData.barcode_id);
             showAlert('success', `تم إضافة الأكسسوار "${accessoryData.name}" بنجاح!`);
-            
+
+            localStorage.setItem('lastAddedAccessory', JSON.stringify(accessoryData));
+
             // إظهار زر طباعة الباركود
             document.getElementById('printBarcodeBtn').style.display = 'inline-block';
             
@@ -532,8 +560,11 @@
           localStorage.setItem('accessories', JSON.stringify(accessories));
           console.log('✅ تم حفظ الأكسسوار في localStorage');
           console.log('🏷️ الباركود:', accessoryData.barcode);
+          console.log('🏷️ المعرّف القصير:', accessoryData.barcode_id);
           showAlert('success', 'تم إضافة الأكسسوار بنجاح! (محلي)');
-          
+
+          localStorage.setItem('lastAddedAccessory', JSON.stringify(accessoryData));
+
           // إظهار زر طباعة الباركود
           document.getElementById('printBarcodeBtn').style.display = 'inline-block';
           

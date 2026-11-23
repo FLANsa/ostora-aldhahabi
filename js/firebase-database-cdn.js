@@ -19,15 +19,22 @@ import {
 // ===== طبقة تقليل قراءات Firestore =====
 // تخزين مؤقت لكل مجموعة في sessionStorage (لكل تبويب) مع صلاحية زمنية،
 // ويُمسح تلقائياً عند أي كتابة على نفس المجموعة من هذا التبويب.
-const CACHE_TTL_MS = 5 * 60 * 1000;
+const COLLECTION_CACHE_TTL_MS = 5 * 60 * 1000;
+// المبيعات أقصر لأن حالة الفاتورة/tوفر الهاتف تتغير من أجهزة أخرى
+const SALES_CACHE_TTL_MS = 30 * 1000;
 const CACHE_PREFIX = 'fsCache:';
+
+// مدة صلاحية الكاش حسب اسم المجموعة
+function cacheTtl(collectionName) {
+  return collectionName === 'sales' ? SALES_CACHE_TTL_MS : COLLECTION_CACHE_TTL_MS;
+}
 
 function readCache(key) {
   try {
     const raw = sessionStorage.getItem(CACHE_PREFIX + key);
     if (!raw) return null;
     const { t, rows } = JSON.parse(raw);
-    if (!t || Date.now() - t > CACHE_TTL_MS) return null;
+    if (!t || Date.now() - t > cacheTtl(key)) return null;
     return rows;
   } catch (e) {
     return null;
@@ -89,6 +96,25 @@ class FirebaseDatabase {
     this.db = window.firebaseDB;
     this.auth = window.firebaseAuth;
     this._inflight = {};
+  }
+
+  // مرجع مستند موحّد (يستخدمه مسار الاسترجاع الذرّي)
+  docRef(collectionName, id) {
+    return doc(this.db, collectionName, id);
+  }
+
+  // البحث عن أول مستند يطابق قيمة حقل معيّن — لتوافق الفواتير القديمة
+  async findFirstByField(collectionName, fieldName, value) {
+    const snapshot = await countedGetDocs(
+      query(collection(this.db, collectionName), where(fieldName, '==', value))
+    );
+    if (snapshot.empty) return null;
+    return snapshot.docs[0].ref;
+  }
+
+  // إبطال كاش مجموعة في التبويب الحالي فقط (سلوك الكاش كما هو)
+  invalidateCollectionCache(collectionName) {
+    bustCache(collectionName);
   }
 
   // جلب مجموعة عبر الكاش: يعيد النسخة المخزنة إن كانت صالحة،
@@ -500,6 +526,140 @@ class FirebaseDatabase {
       console.error('❌ Error updating sale:', error);
       throw error;
     }
+  }
+
+  /**
+   * استرجاع فاتورة كعملية واحدة: تعليم الفاتورة مسترجعة وإرجاع كميات الأكسسوارات.
+   * الفحص داخل المعاملة يمنع الاسترجاع المكرر حتى مع ضغطتين أو جهازين معاً،
+   * وأي فشل يُرمى للمستدعي حتى لا نظهر نجاحاً وهمياً.
+   */
+  async returnSale(saleId, returnedAt) {
+    const saleRef = this.docRef('sales', saleId);
+    const missingSaleError = 'الفاتورة غير موجودة في قاعدة البيانات، حدّث الصفحة وأعد المحاولة';
+
+    // قراءة أولية لبنود الفاتورة لتحديد مراجع الأكسسوارات قبل بدء المعاملة
+    const saleSnapshot = await countedGetDoc(saleRef);
+    if (!saleSnapshot.exists()) throw new Error(missingSaleError);
+
+    const sale = saleSnapshot.data() || {};
+    if (sale.returned === true || sale.status === 'مسترجعة') {
+      this.invalidateCollectionCache('sales');
+      this.invalidateCollectionCache('accessories');
+      return { alreadyReturned: true, restocked: [], skipped: [] };
+    }
+
+    const items = Array.isArray(sale.items) ? sale.items : [];
+    const accessoryQuantities = new Map(); // ref.path -> { ref, id, name, qty }
+    const skipped = [];
+
+    // حلّ مراجع الأكسسوارات مرة واحدة لكل معرّف، مع دعم الفواتير القديمة
+    for (const item of items) {
+      if (!item || item.type === 'phone') continue; // الهاتف يتوفر باستبعاد الفاتورة المسترجعة
+      const rawId = item.id != null ? String(item.id) : '';
+      if (!rawId) {
+        skipped.push({ id: rawId, reason: 'بند الأكسسوار بدون معرّف' });
+        continue;
+      }
+
+      let accessoryRef = null;
+      let accessoryData = null;
+
+      const directSnapshot = await countedGetDoc(this.docRef('accessories', rawId));
+      if (directSnapshot.exists()) {
+        accessoryRef = directSnapshot.ref;
+        accessoryData = directSnapshot.data() || {};
+      } else {
+        // الفواتير القديمة قد تحمل sku أو barcode أو accessory_number بدل معرّف المستند
+        // ونجرّب القيمة الأصلية قبل تحويلها لنص لتطابق الحقول المخزّنة رقمياً
+        const lookupValues = item.id != null && typeof item.id !== 'string'
+          ? [item.id, rawId]
+          : [rawId];
+        for (const fieldName of ['sku', 'barcode', 'accessory_number']) {
+          for (const value of lookupValues) {
+            accessoryRef = await this.findFirstByField('accessories', fieldName, value);
+            if (accessoryRef) break;
+          }
+          if (accessoryRef) {
+            const legacySnapshot = await countedGetDoc(accessoryRef);
+            accessoryData = legacySnapshot.exists() ? (legacySnapshot.data() || {}) : {};
+            break;
+          }
+        }
+      }
+
+      if (!accessoryRef) {
+        skipped.push({ id: rawId, reason: 'الأكسسوار غير موجود في مجموعة accessories' });
+        continue;
+      }
+
+      const key = accessoryRef.path;
+      const qty = Math.max(0, Number(item.quantity) || 0);
+      const existing = accessoryQuantities.get(key);
+      if (existing) {
+        existing.qty += qty;
+      } else {
+        accessoryQuantities.set(key, {
+          ref: accessoryRef,
+          id: accessoryRef.id,
+          name: accessoryData.name || item.name || rawId,
+          qty
+        });
+      }
+    }
+
+    // كل القراءات داخل المعاملة قبل أي كتابة (شرط Firestore)
+    const result = await runTransaction(this.db, async (transaction) => {
+      const freshSale = await transaction.get(saleRef);
+      if (!freshSale.exists()) throw new Error(missingSaleError);
+      const freshSaleData = freshSale.data() || {};
+      if (freshSaleData.returned === true || freshSaleData.status === 'مسترجعة') {
+        this.invalidateCollectionCache('sales');
+        this.invalidateCollectionCache('accessories');
+        return { alreadyReturned: true, restocked: [], skipped: [] };
+      }
+
+      const accessorySnapshots = [];
+      for (const entry of accessoryQuantities.values()) {
+        accessorySnapshots.push({ entry, snapshot: await transaction.get(entry.ref) });
+      }
+
+      const restocked = [];
+      const skippedInTransaction = [];
+      for (const { entry, snapshot } of accessorySnapshots) {
+        if (!snapshot.exists()) {
+          skippedInTransaction.push({ id: entry.id, reason: 'الأكسسوار غير موجود في مجموعة accessories' });
+          continue;
+        }
+        const data = snapshot.data() || {};
+        const currentStock = Number(data.quantity_in_stock ?? data.quantity ?? 0) || 0;
+        const newStock = currentStock + entry.qty;
+        transaction.update(entry.ref, {
+          quantity_in_stock: newStock,
+          quantity: newStock,
+          updatedAt: serverTimestamp()
+        });
+        restocked.push({ id: entry.id, name: entry.name, added: entry.qty });
+      }
+
+      transaction.update(saleRef, {
+        returned: true,
+        status: 'مسترجعة',
+        returned_at: returnedAt || new Date().toISOString(),
+        updatedAt: serverTimestamp()
+      });
+
+      return { alreadyReturned: false, restocked, skipped: skippedInTransaction };
+    });
+
+    this.invalidateCollectionCache('sales');
+    this.invalidateCollectionCache('accessories');
+    console.log('✅ Sale returned atomically:', saleId, result.restocked.length);
+
+    return {
+      alreadyReturned: result.alreadyReturned,
+      restocked: result.restocked,
+      skipped: [...skipped, ...result.skipped]
+    };
   }
 
   async deleteSale(saleId) {

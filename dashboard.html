@@ -808,6 +808,14 @@
     // تحديث لوحة التحكم (مرة واحدة عند فتح الصفحة فقط)
     await updateDashboard();
   });
+
+  // العودة من bfcache: إعادة تحميل البيانات دون إعادة تحميل الصفحة بالكامل
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted) return;
+    window.firebaseDatabase?.invalidateCollectionCache?.('sales');
+    window.firebaseDatabase?.invalidateCollectionCache?.('accessories');
+    updateDashboard();
+  });
 </script>
 
 <!-- Navigation Script -->

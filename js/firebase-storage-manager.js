@@ -30,6 +30,87 @@ const DEFAULT_ACCESSORY_CATEGORIES = [
   { name: 'other', arabic_name: 'أخرى', description: 'فئات أخرى' }
 ];
 
+// ===== معرّف إكسسوار قصير قابل للمسح على ملصق 40x25mm =====
+// الصيغة ACCXXXXX (8 رموز): تبدأ بـ ACC ليستمر الماسح توجيهها للإكسسوارات،
+// وخمسة رموز بعدها تقلّل احتمال التطابق إلى نحو 1 من 60 مليون.
+const ACCESSORY_CODE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+function normalizeAccessoryCode(value) {
+  const arabicDigits = '٠١٢٣٤٥٦٧٨٩';
+  const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
+  return String(value ?? '').trim()
+    .replace(/[٠-٩]/g, d => arabicDigits.indexOf(d))
+    .replace(/[۰-۹]/g, d => persianDigits.indexOf(d))
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function shortAccessoryId(seed) {
+  const normalized = normalizeAccessoryCode(seed);
+  // الباركود المخصص قد لا يحتوي أي رمز أبجدي رقمي، لذا نجزّئ النص الخام أيضاً
+  const text = normalized || String(seed ?? '').trim();
+  if (!text) return '';
+  // بصمة 64 بت من تابعَي تجزئة مستقلين، ثم خمسة رموز أساس 36
+  let h1 = 2166136261;
+  let h2 = 0x811c9dc5 ^ 0x9e3779b9;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 16777619) >>> 0;
+    h2 = Math.imul(h2 ^ code, 2246822519) >>> 0;
+  }
+  let value = (BigInt(h1) << 32n) | BigInt(h2);
+  let suffix = '';
+  for (let i = 0; i < 5; i++) {
+    suffix = ACCESSORY_CODE_ALPHABET[Number(value % 36n)] + suffix;
+    value /= 36n;
+  }
+  return `ACC${suffix}`;
+}
+
+function isShortAccessoryId(value) {
+  return /^ACC[0-9A-Z]{5}$/.test(normalizeAccessoryCode(value));
+}
+
+function accessoryScannableId(accessory) {
+  if (!accessory) return '';
+  const stored = accessory.barcode_id;
+  if (isShortAccessoryId(stored)) return normalizeAccessoryCode(stored);
+  // السجلات القديمة تحمل ACC-YYYYMMDD-0001 في barcode_id؛ نشتق لها معرّفاً ثابتاً
+  // من هذا الرقم نفسه (لا من الاسم/السعر) حتى لا يتغيّر المعرّف بتعديل بيانات السجل.
+  return shortAccessoryId(accessory.barcode_id || accessory.barcode || accessory.serial_number || accessory.sku || accessory.id);
+}
+
+function accessoryCodeCandidates(accessory) {
+  if (!accessory) return [];
+  const values = [
+    accessory.barcode_id, accessory.barcode, accessory.sku,
+    accessory.accessory_number, accessory.serial_number,
+    accessoryScannableId(accessory)
+  ];
+  // الأكواد المخصصة التي يزيلها التنظيف (مثل ###) تُطابق نصها الخام
+  const normalized = values.map(normalizeAccessoryCode).filter(Boolean);
+  const raw = values.map(v => String(v ?? '').trim())
+    .filter(v => v && !normalizeAccessoryCode(v));
+  return [...new Set([...normalized, ...raw])];
+}
+
+function accessoryMatchesCode(accessory, code) {
+  const needle = normalizeAccessoryCode(code);
+  const target = needle || String(code ?? '').trim();
+  return !!target && accessoryCodeCandidates(accessory).includes(target);
+}
+
+const accessoryCode = {
+  normalize: normalizeAccessoryCode,
+  shortId: shortAccessoryId,
+  isShort: isShortAccessoryId,
+  scannableId: accessoryScannableId,
+  candidates: accessoryCodeCandidates,
+  matches: accessoryMatchesCode
+};
+
+if (typeof window !== 'undefined') window.accessoryCode = accessoryCode;
+
 class FirebaseStorageManager {
   constructor() {
     this.firebaseDB = window.firebaseDatabase;
@@ -235,6 +316,15 @@ class FirebaseStorageManager {
     return this.getItem(CONFIG.STORAGE_KEYS.ACCESSORIES, []);
   }
 
+  // يطابق المعرّف القصير والباركود المرجعي القديم وأي حقل معرّف آخر
+  async getAccessoryByBarcode(code) {
+    const target = normalizeAccessoryCode(code) || String(code ?? '').trim();
+    if (!target) return null;
+    const all = await this.getAccessories();
+    const list = Array.isArray(all) ? all : Object.values(all || {});
+    return list.find(a => accessoryMatchesCode(a, target)) || null;
+  }
+
   async setAccessories(accessories) {
     if (this.isFirebaseAvailable) {
       console.log('Firebase mode: accessories are managed individually');
@@ -370,6 +460,121 @@ class FirebaseStorageManager {
       return this.setSales(sales);
     }
     return false;
+  }
+
+  /**
+   * تحديث حالة توفر Firebase قبل عملية حساسة (الاسترجاع).
+   * لا يغيّر سلوك باقي الدوال التي تستخدم isFirebaseAvailable.
+   */
+  refreshFirebaseAvailability() {
+    this.isFirebaseAvailable = !!(this.firebaseDB && this.firebaseDB.db);
+    return this.isFirebaseAvailable;
+  }
+
+  // تسلسل محلي عبر Web Locks إن توفّرت (يمنع استرجاعين متزامنين من تبويبين)
+  async _withReturnLock(saleId, work) {
+    if (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') {
+      return await navigator.locks.request('return-sale:' + saleId, work);
+    }
+    return await work();
+  }
+
+  /**
+   * استرجاع الفاتورة: في Firebase تُنفّذ العملية كاملة داخل معاملة ذرّية،
+   * وفي الوضع المحلي تُحسب الكميات في الذاكرة ثم تُكتب المجموعتان معاً.
+   * لا تبتلع الأخطاء أبداً في هذا المسار.
+   */
+  async returnSale(saleId, returnedAt) {
+    if (this.refreshFirebaseAvailability()) {
+      if (typeof this.firebaseDB.returnSale !== 'function') {
+        throw new Error('دالة الاسترجاع الذرّي غير متاحة في قاعدة البيانات');
+      }
+      return await this.firebaseDB.returnSale(saleId, returnedAt);
+    }
+
+    return await this._withReturnLock(saleId, async () => {
+      const sales = JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEYS.SALES) || '[]');
+      const saleIndex = Array.isArray(sales) ? sales.findIndex(s => s && s.id === saleId) : -1;
+      if (saleIndex === -1) {
+        throw new Error('الفاتورة غير موجودة في قاعدة البيانات، حدّث الصفحة وأعد المحاولة');
+      }
+
+      const sale = sales[saleIndex];
+      if (sale.returned === true || sale.status === 'مسترجعة') {
+        return { alreadyReturned: true, restocked: [], skipped: [] };
+      }
+
+      const rawAccessories = JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEYS.ACCESSORIES) || '[]');
+      const accessories = Array.isArray(rawAccessories) ? rawAccessories.map(a => ({ ...a })) : [];
+      const totals = new Map();
+      const skipped = [];
+      const returnedValue = returnedAt || new Date().toISOString();
+
+      // حساب كل الكميات الجديدة في الذاكرة أولاً — لا كتابة قبل اكتمال الحساب
+      for (const item of (Array.isArray(sale.items) ? sale.items : [])) {
+        if (!item || item.type === 'phone') continue;
+        const rawId = item.id != null ? String(item.id) : '';
+        const index = accessories.findIndex(a => a && (
+          String(a.id) === rawId || String(a.sku) === rawId ||
+          String(a.barcode) === rawId || String(a.accessory_number) === rawId
+        ));
+        if (!rawId || index === -1) {
+          skipped.push({ id: rawId, reason: 'الأكسسوار غير موجود في مجموعة accessories' });
+          continue;
+        }
+        const qty = Math.max(0, Number(item.quantity) || 0);
+        const existing = totals.get(index);
+        if (existing) {
+          existing.qty += qty;
+        } else {
+          totals.set(index, { qty, name: accessories[index].name || item.name || rawId });
+        }
+      }
+
+      const restocked = [];
+      for (const [index, { qty, name }] of totals) {
+        const accessory = accessories[index];
+        const currentStock = Number(accessory.quantity_in_stock ?? accessory.quantity ?? 0) || 0;
+        const newStock = currentStock + qty;
+        accessory.quantity_in_stock = newStock;
+        accessory.quantity = newStock;
+        accessory.updatedAt = new Date().toISOString();
+        restocked.push({ id: accessory.id, name, added: qty });
+      }
+
+      sales[saleIndex] = {
+        ...sale,
+        returned: true,
+        status: 'مسترجعة',
+        returned_at: returnedValue,
+        updatedAt: new Date().toISOString()
+      };
+
+      // localStorage لا يعرف المعاملات: نكتب المخزون أولاً ثم الفاتورة،
+      // ونرجّع المخزون إذا فشلت كتابة الفاتورة كي لا يحدث إرجاع بلا تعليم.
+      const previousAccessories = localStorage.getItem(CONFIG.STORAGE_KEYS.ACCESSORIES);
+      try {
+        if (!this.setItem(CONFIG.STORAGE_KEYS.ACCESSORIES, accessories)) {
+          throw new Error('تعذر حفظ مخزون الأكسسوارات محلياً');
+        }
+        if (!this.setItem(CONFIG.STORAGE_KEYS.SALES, sales)) {
+          throw new Error('تعذر حفظ الفاتورة محلياً');
+        }
+      } catch (error) {
+        try {
+          if (previousAccessories === null) {
+            localStorage.removeItem(CONFIG.STORAGE_KEYS.ACCESSORIES);
+          } else {
+            localStorage.setItem(CONFIG.STORAGE_KEYS.ACCESSORIES, previousAccessories);
+          }
+        } catch (rollbackError) {
+          console.error('⚠️ تعذّر ترجيع المخزون بعد فشل الحفظ:', rollbackError);
+        }
+        throw error;
+      }
+
+      return { alreadyReturned: false, restocked, skipped };
+    });
   }
 
   async deleteSale(saleId) {

@@ -552,6 +552,14 @@
     // تحديث ملخص المخزون (مرة واحدة عند فتح الصفحة فقط)
     await updateInventorySummary();
   });
+
+  // العودة من bfcache: إعادة تحميل المخزون دون إعادة تحميل الصفحة بالكامل
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted) return;
+    window.firebaseDatabase?.invalidateCollectionCache?.('sales');
+    window.firebaseDatabase?.invalidateCollectionCache?.('accessories');
+    updateInventorySummary();
+  });
 </script>
 
 <!-- Navigation Script -->

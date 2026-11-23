@@ -81,7 +81,8 @@
     
     // تحديد نوع المنتج من الباركود إذا لم يتم تحديده
     let detectedType = productType;
-    if (code.startsWith('ACC-')) {
+    const upperCode = code.toUpperCase();
+    if (upperCode.startsWith('ACC-') || /^ACC[0-9A-Z]{5}$/.test(upperCode)) {
       detectedType = 'accessory';
     } else if (code.startsWith('PHONE') || code.match(/^\d+$/)) {
       detectedType = productType.includes('phone') ? productType : 'phone_new';

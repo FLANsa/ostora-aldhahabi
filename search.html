@@ -297,6 +297,8 @@
       
       // البحث في كلا النسختين (عربية وإنجليزية)
       const searchTerms = [term.toLowerCase(), englishTerm.toLowerCase(), arabicTerm.toLowerCase()];
+      const normalizedTerm = window.accessoryCode ? window.accessoryCode.normalize(term).toLowerCase() : '';
+      if (normalizedTerm) searchTerms.push(normalizedTerm);
       const uniqueTerms = [...new Set(searchTerms)]; // إزالة التكرار
       
       console.log('🔤 الرموز المطلوب البحث عنها:', uniqueTerms);
@@ -327,7 +329,8 @@
       if (type === 'all' || type === 'accessories') {
         accessories = allAccessories.filter(a => {
           // إضافة الباركود و serial_number إلى البحث للأكسسوارات
-          const searchText = `${a.name || ''} ${a.arabic_name || ''} ${a.barcode || ''} ${a.barcode_id || ''} ${a.serial_number || ''} ${a.category || ''}`.toLowerCase();
+          const codeTokens = window.accessoryCode ? window.accessoryCode.candidates(a).join(' ') : '';
+          const searchText = `${a.name || ''} ${a.arabic_name || ''} ${a.barcode || ''} ${a.barcode_id || ''} ${codeTokens} ${a.serial_number || ''} ${a.category || ''}`.toLowerCase();
           const englishSearchText = convertArabicToEnglishNumbers(searchText);
           const arabicSearchText = convertEnglishToArabicNumbers(searchText);
           
@@ -509,7 +512,7 @@
                 ${accessoriesForCurrentPage.map(a => `
                   <tr>
                     <td><strong>${a.arabic_name || a.name || 'غير محدد'}</strong></td>
-                    <td><span class="text-info">${a.barcode || 'غير محدد'}</span></td>
+                    <td><span class="text-info" title="${escapeHtmlAttr(a.barcode || '')}">${escapeHtmlAttr(accessoryPrintCode(a) || 'غير محدد')}</span></td>
                     <td><span class="text-info">${a.serial_number || 'غير محدد'}</span></td>
                     <td><span class="badge bg-primary">${a.category || 'غير محدد'}</span></td>
                     <td><span class="badge bg-success">${a.quantity_in_stock || a.quantity || 0}</span></td>
@@ -523,7 +526,7 @@
                         <button type="button" class="btn btn-sm btn-outline-primary" onclick="editAccessory('${a.id}')" title="تعديل">
                           <i class="fas fa-edit"></i>
                         </button>
-                        ${a.barcode ? `<button type="button" class="btn btn-sm btn-outline-success" onclick="goPrintAccessoryBarcode('${a.barcode}')" title="طباعة الباركود">
+                        ${(a.barcode || a.barcode_id) ? `<button type="button" class="btn btn-sm btn-outline-success" onclick="goPrintAccessoryBarcode('${jsAttrString(accessoryPrintCode(a))}')" title="طباعة الباركود">
                           <i class="fas fa-barcode"></i>
                         </button>` : ''}
                         <button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteAccessory('${a.id}')" title="حذف">
@@ -831,6 +834,14 @@
     }
   });
 
+  // العودة من bfcache: إعادة تحميل البيانات دون إعادة تحميل الصفحة بالكامل
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted) return;
+    window.firebaseDatabase?.invalidateCollectionCache?.('sales');
+    window.firebaseDatabase?.invalidateCollectionCache?.('accessories');
+    loadAllData();
+  });
+
   // ===== طباعة الباركود =====
   function goPrintBarcode(rawCode) {
     const code = String(rawCode || '').trim();
@@ -843,6 +854,19 @@
   }
 
   // ===== طباعة باركود الإكسسوار =====
+  function accessoryPrintCode(a) {
+    return (window.accessoryCode && window.accessoryCode.scannableId(a)) || a?.barcode || a?.barcode_id || '';
+  }
+
+  function escapeHtmlAttr(value) {
+    return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function jsAttrString(value) {
+    return escapeHtmlAttr(String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+  }
+
   function goPrintAccessoryBarcode(rawCode) {
     const code = String(rawCode || '').trim();
     if (!code) { 

@@ -687,6 +687,14 @@
     toggleDateInput();
     await loadSalesFromFirebase();
   });
+
+  // العودة من bfcache: إعادة تحميل المبيعات دون إعادة تحميل الصفحة بالكامل
+  window.addEventListener('pageshow', (event) => {
+    if (!event.persisted) return;
+    window.firebaseDatabase?.invalidateCollectionCache?.('sales');
+    window.firebaseDatabase?.invalidateCollectionCache?.('accessories');
+    loadSalesFromFirebase();
+  });
 </script>
 
 <!-- Navigation Script -->
