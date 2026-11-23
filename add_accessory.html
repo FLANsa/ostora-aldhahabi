@@ -396,7 +396,10 @@
     // معرّف قصير فريد يُخزَّن في barcode_id، بينما يبقى الباركود الذي أدخله المستخدم مرجعاً ظاهراً
     async function buildShortBarcodeId(reference) {
       const api = window.accessoryCode;
-      if (!api) return String(reference || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 8);
+      if (!api) {
+        const raw = String(reference ?? '').trim();
+        return /^9\d{7}$/.test(raw) ? raw : `9${String(Date.now()).slice(-7)}`;
+      }
       let existing = [];
       try {
         const all = window.storage ? await window.storage.getAccessories() : null;

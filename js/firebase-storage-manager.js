@@ -31,9 +31,9 @@ const DEFAULT_ACCESSORY_CATEGORIES = [
 ];
 
 // ===== معرّف إكسسوار قصير قابل للمسح على ملصق 40x25mm =====
-// الصيغة ACCXXXXX (8 رموز): تبدأ بـ ACC ليستمر الماسح توجيهها للإكسسوارات،
-// وخمسة رموز بعدها تقلّل احتمال التطابق إلى نحو 1 من 60 مليون.
-const ACCESSORY_CODE_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+// الصيغة 9XXXXXXX (8 أرقام): رقم فقط يقرأه الماسح بسهولة، ويبدأ بـ 9
+// ليتمايز عن أرقام الهواتف. نحتفظ بالصيغة القديمة ACCXXXXX حتى تبقى
+// الملصقات التي طُبعت سابقاً قابلة للمسح.
 
 function normalizeAccessoryCode(value) {
   const arabicDigits = '٠١٢٣٤٥٦٧٨٩';
@@ -50,7 +50,7 @@ function shortAccessoryId(seed) {
   // الباركود المخصص قد لا يحتوي أي رمز أبجدي رقمي، لذا نجزّئ النص الخام أيضاً
   const text = normalized || String(seed ?? '').trim();
   if (!text) return '';
-  // بصمة 64 بت من تابعَي تجزئة مستقلين، ثم خمسة رموز أساس 36
+  // بصمة 64 بت من تابعَي تجزئة مستقلين، ثم سبعة أرقام بعد البادئة 9
   let h1 = 2166136261;
   let h2 = 0x811c9dc5 ^ 0x9e3779b9;
   for (let i = 0; i < text.length; i++) {
@@ -58,17 +58,13 @@ function shortAccessoryId(seed) {
     h1 = Math.imul(h1 ^ code, 16777619) >>> 0;
     h2 = Math.imul(h2 ^ code, 2246822519) >>> 0;
   }
-  let value = (BigInt(h1) << 32n) | BigInt(h2);
-  let suffix = '';
-  for (let i = 0; i < 5; i++) {
-    suffix = ACCESSORY_CODE_ALPHABET[Number(value % 36n)] + suffix;
-    value /= 36n;
-  }
-  return `ACC${suffix}`;
+  const value = ((BigInt(h1) << 32n) | BigInt(h2)) % 10000000n;
+  return `9${value.toString().padStart(7, '0')}`;
 }
 
 function isShortAccessoryId(value) {
-  return /^ACC[0-9A-Z]{5}$/.test(normalizeAccessoryCode(value));
+  const code = normalizeAccessoryCode(value);
+  return /^9\d{7}$/.test(code) || /^ACC[0-9A-Z]{5}$/.test(code);
 }
 
 function accessoryScannableId(accessory) {

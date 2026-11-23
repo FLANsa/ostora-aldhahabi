@@ -112,11 +112,11 @@
         lineColor:"#000000"
       });
       showWarning(normalized.length > 8
-        ? 'هذا باركود مرجعي قديم وطويل؛ يُطبع بمسافة شرائط أضيق. استخدم المعرّف القصير ACCXXXXX للأكسسوارات الجديدة.'
+        ? 'هذا باركود مرجعي قديم وطويل؛ يُطبع بمسافة شرائط أضيق. استخدم المعرّف القصير 9XXXXXXX للأكسسوارات الجديدة.'
         : '');
     }catch(error){
       console.warn('تعذّر ترميز الباركود:', error);
-      showWarning('تعذّر ترميز هذا الرقم على الملصق؛ استخدم معرّفاً لاتينياً أو المعرّف القصير ACCXXXXX.');
+      showWarning('تعذّر ترميز هذا الرقم على الملصق؛ استخدم معرّفاً من 8 أرقام يبدأ بـ 9.');
     }
   }
 
@@ -248,7 +248,7 @@
     }catch{}
 
     // لا نولّد رقماً قديماً طويلاً غير محفوظ؛ نستخدم معرّفاً قصيراً مع تنبيه
-    currentBarcode = window.accessoryCode ? window.accessoryCode.shortId(Date.now()) : 'ACC-0000';
+    currentBarcode = window.accessoryCode ? window.accessoryCode.shortId(Date.now()) : '90000000';
     fillSticker({ priceText: '0 ريال' }, currentBarcode);
     showWarning('هذا ملصق تجريبي غير مرتبط بسجل محفوظ؛ أضف الإكسسوار أولاً ثم اطبع باركوده.');
   }
